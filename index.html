@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #222; display: flex; align-items: center; justify-content: center; min-height: 100vh; font-family: -apple-system, 'SF Pro Text', Inter, sans-serif; }
+  .phone { width: 390px; height: 844px; border-radius: 48px; overflow: hidden; position: relative; box-shadow: 0 30px 80px rgba(0,0,0,.6); }
+
+  /* ---------- background scene: representative gym app ---------- */
+  .scene-dark { position: absolute; inset: 0; background: #0F0F0F; color: #fff; padding: 54px 20px 0; }
+  .scene-light { position: absolute; inset: 0; background: #FFFFFF; color: #111; padding: 54px 20px 0; }
+  .hdr { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+  .sub { font-size: 13px; opacity: .55; margin-top: 4px; }
+  .stats { display: flex; gap: 10px; margin-top: 18px; }
+  .stat { flex: 1; border-radius: 16px; padding: 14px 12px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.07); }
+  .scene-light .stat { background: rgba(0,0,0,.04); border-color: rgba(0,0,0,.06); }
+  .stat b { font-size: 20px; display: block; }
+  .stat span { font-size: 10px; opacity: .55; }
+  .card { margin-top: 12px; border-radius: 18px; padding: 16px; background: linear-gradient(135deg, #22C55E, #15803D); color: #fff; }
+  .card h3 { font-size: 15px; } .card p { font-size: 12px; opacity: .85; margin-top: 4px; }
+  .row-list { margin-top: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 13px 4px; border-bottom: 1px solid rgba(128,128,128,.15); }
+  .avatar { width: 38px; height: 38px; border-radius: 50%; background: linear-gradient(135deg,#666,#333); }
+  .row b { font-size: 14px; display: block; } .row span { font-size: 11px; opacity: .5; }
+  .tag { margin-left: auto; font-size: 10px; padding: 4px 10px; border-radius: 99px; background: rgba(34,197,94,.15); color: #22C55E; font-weight: 600; }
+
+  /* ---------- blur scrims: gradient OF blur, not color ---------- */
+  .scrim-bottom {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 170px; pointer-events: none; z-index: 1;
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    -webkit-mask-image: linear-gradient(to top, black 0%, transparent 100%);
+    mask-image: linear-gradient(to top, black 0%, transparent 100%);
+  }
+  .scrim-top {
+    position: absolute; left: 0; right: 0; top: 0; height: 110px; pointer-events: none; z-index: 1;
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    -webkit-mask-image: linear-gradient(to bottom, black 0%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 0%, transparent 100%);
+  }
+
+  /* ---------- the liquid glass bar: clear, colourless, soft light ---------- */
+  .bar {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: 24px; width: 351px; height: 64px; border-radius: 32px; z-index: 2;
+    background: rgba(255,255,255,.06);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,.18);
+    box-shadow: 0 12px 32px rgba(0,0,0,.25);
+    overflow: hidden;
+  }
+  .scene-light-wrap .bar { background: rgba(255,255,255,.35); border-color: rgba(255,255,255,.6); box-shadow: 0 12px 32px rgba(0,0,0,.12); }
+  /* specular: soft light from top — NOT harsh */
+  .bar::before {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 5;
+    background: linear-gradient(180deg, rgba(255,255,255,.28) 0%, rgba(255,255,255,.06) 22%, transparent 45%);
+  }
+  .bar::after {
+    content: ''; position: absolute; left: 10%; right: 10%; top: 0; height: 1px; border-radius: 2px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.45) 25%, rgba(255,255,255,.45) 75%, transparent);
+    z-index: 6; pointer-events: none;
+  }
+  .refract {
+    position: absolute; inset: -14px; border-radius: 40px; pointer-events: none;
+    filter: url(#liquid-bend);
+    opacity: .9;
+  }
+
+  /* ---------- the droplet: floats OVER the bar, icon rides on top ---------- */
+  .droplet {
+    position: absolute; height: 58px; width: 86px; border-radius: 99px; z-index: 3;
+    background: rgba(255,255,255,.05);
+    -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+    border: 1px solid rgba(255,255,255,.3);
+    box-shadow: inset 0 1px 2px rgba(255,255,255,.35), 0 4px 14px rgba(0,0,0,.15);
+  }
+  .droplet::before {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: linear-gradient(180deg, rgba(255,255,255,.3) 0%, transparent 45%);
+  }
+  /* NO iridescent rim — colours eliminated */
+  .droplet .lens {
+    position: absolute; inset: -8px; border-radius: 99px; overflow: hidden; pointer-events: none;
+    filter: url(#droplet-bend);
+  }
+  .droplet .disc-icon {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .droplet .disc-icon svg { width: 23px; height: 23px; }
+
+  /* icons row inside the bar — inactive only, readable over glass */
+  .tabs { position: absolute; inset: 0; display: flex; z-index: 4; }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+  .tab svg { width: 23px; height: 23px; }
+  .tab span { font-size: 9px; font-weight: 500; letter-spacing: .02em; }
+  /* inactive icons: legible over clear glass (not washed out) */
+  .tab.inactive svg { opacity: .75; } .tab.inactive span { opacity: .75; }
+  .tab.active-tab svg, .tab.active-tab span { opacity: 0; } /* icon rides the disc now */
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <!-- bar: visible rim distortion (refraction), calm center, no bubble, no colour -->
+    <filter id="liquid-bend" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.012 0.02" numOctaves="2" seed="7" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="12" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <!-- droplet: gentle magnifying-glass (not fisheye) — slight zoom, no warp -->
+    <filter id="droplet-bend" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02 0.03" numOctaves="2" seed="11" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="10" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+  </defs>
+</svg>
+
+<div class="phone" id="phone"></div>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  const mode = q.get('mode') || 'dark-rest'; // dark-rest | dark-drag | light-rest
+  const dark = mode.startsWith('dark');
+  const drag = mode.endsWith('drag');
+
+  const ICONS = {
+    home: '<svg viewBox="0 0 24 24" fill="ACT"><path d="M12 3l9 8h-3v9h-4v-6H10v6H6v-9H3z"/></svg>',
+    users: '<svg viewBox="0 0 24 24" fill="ACT"><path d="M16 11a4 4 0 10-4-4 4 4 0 004 4zm-8 0a4 4 0 10-4-4 4 4 0 004 4zm0 2c-2.7 0-8 1.3-8 4v3h9v-3c0-.5.1-1 .3-1.4A11 11 0 008 13zm8 0c-.3 0-.6 0-1 .1A5.2 5.2 0 0116 16v4h8v-3c0-2.7-5.3-4-8-4z"/></svg>',
+    chart: '<svg viewBox="0 0 24 24" fill="ACT"><path d="M5 20V10h3v10zm6 0V4h3v16zm6 0v-7h3v7z"/></svg>',
+    user: '<svg viewBox="0 0 24 24" fill="ACT"><path d="M12 12a5 5 0 10-5-5 5 5 0 005 5zm0 2c-4 0-9 2-9 5v3h18v-3c0-3-5-5-9-5z"/></svg>',
+  };
+  const act = dark ? '#FFFFFF' : '#111111';
+  const inact = dark ? '#A8A8AD' : '#4B5563';
+  const tabs = [
+    { icon: 'home', label: 'Home', active: true },
+    { icon: 'users', label: 'Members' },
+    { icon: 'chart', label: 'Revenue' },
+    { icon: 'user', label: 'Profile' },
+  ];
+
+  // bar geometry (must match .bar CSS)
+  const BAR_W = 351, BAR_H = 64, BAR_BOTTOM = 24, PHONE_W = 390;
+  const barLeft = (PHONE_W - BAR_W) / 2;
+  const dropLeft = barLeft + (drag ? 96 : 8);
+  const dropTop = 844 - BAR_BOTTOM - BAR_H + 3; // 3px from bar top
+
+  const phone = document.getElementById('phone');
+  phone.className = 'phone' + (dark ? '' : ' scene-light-wrap');
+  phone.innerHTML = `
+    <div class="${dark ? 'scene-dark' : 'scene-light'}">
+      <div class="hdr">Pioneer Gym</div>
+      <div class="sub">Good afternoon, Owner</div>
+      <div class="stats">
+        <div class="stat"><b>248</b><span>Members</span></div>
+        <div class="stat"><b>32</b><span>In today</span></div>
+        <div class="stat"><b>₹48k</b><span>Revenue</span></div>
+      </div>
+      <div class="card"><h3>Expiring soon</h3><p>12 memberships end this week</p></div>
+      <div class="row-list">
+        <div class="row"><div class="avatar"></div><div><b>Aarav Mehta</b><span>Checked in 8:42 AM</span></div><div class="tag">Active</div></div>
+        <div class="row"><div class="avatar"></div><div><b>Riya Shah</b><span>Checked in 9:15 AM</span></div><div class="tag">Active</div></div>
+        <div class="row"><div class="avatar"></div><div><b>Kabir Singh</b><span>Checked in 9:31 AM</span></div><div class="tag">Active</div></div>
+        <div class="row"><div class="avatar"></div><div><b>Neha Kulkarni</b><span>Checked in 10:02 AM</span></div><div class="tag">Active</div></div>
+        <div class="row"><div class="avatar"></div><div><b>Arjun Nair</b><span>Checked in 10:20 AM</span></div><div class="tag">Active</div></div>
+      </div>
+    </div>
+    <div class="scrim-top"></div>
+    <div class="scrim-bottom"></div>
+    <div class="bar" id="bar">
+      <div class="tabs">
+        ${tabs.map(t => `<div class="tab ${t.active ? 'active-tab' : 'inactive'}">${ICONS[t.icon].replaceAll('ACT', inact)}<span style="color:${inact}">${t.label}</span></div>`).join('')}
+      </div>
+    </div>
+    <div class="droplet" id="droplet" style="left:${dropLeft}px; top:${dropTop}px; ${drag ? 'transform:scale(1.22);' : ''}">
+      <div class="disc-icon">${ICONS.home.replaceAll('ACT', act)}</div>
+    </div>`;
+
+  function cloneScene(host, magnify) {
+    const scene = phone.querySelector(dark ? '.scene-dark' : '.scene-light').cloneNode(true);
+    scene.style.position = 'absolute';
+    scene.style.inset = '0';
+    if (magnify) {
+      // gentle magnifying-glass zoom (not fisheye warp)
+      scene.style.transform = 'scale(1.2)';
+      scene.style.transformOrigin = '50% 50%';
+    }
+    host.appendChild(scene);
+  }
+  const bar = document.getElementById('bar');
+  const r = document.createElement('div');
+  r.className = 'refract';
+  bar.prepend(r);
+  cloneScene(r);
+
+  const drop = document.getElementById('droplet');
+  const lens = document.createElement('div');
+  lens.className = 'lens';
+  drop.prepend(lens);
+  cloneScene(lens, true);
+</script>
+</body>
+</html>
