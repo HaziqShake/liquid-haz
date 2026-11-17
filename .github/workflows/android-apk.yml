@@ -89,7 +89,7 @@ jobs:
           # merged_manifest/), and the APK is what the installer sees.
           AAPT2=$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -maxdepth 2 -name aapt2 2>/dev/null | head -1)
           if [ -n "$AAPT2" ]; then
-            MANIFEST=$("$AAPT2" dump xmltree "$APK" AndroidManifest.xml)
+            MANIFEST=$("$AAPT2" dump xmltree --file AndroidManifest.xml "$APK")
           else
             MANIFEST_FILE=$(ls android/app/build/intermediates/merged_manifest/release/AndroidManifest.xml android/app/build/intermediates/merged_manifests/release/AndroidManifest.xml 2>/dev/null | head -1)
             MANIFEST=$(cat "$MANIFEST_FILE")
