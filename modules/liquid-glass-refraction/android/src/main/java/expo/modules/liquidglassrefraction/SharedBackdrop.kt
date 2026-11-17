@@ -59,14 +59,11 @@
 // BUILD 13 — SECOND STRIP (bar-included). The droplet samples a
 // background-only bitmap, so on hold it could only ever show the
 // photo and the re-rendered icon — never the bar. A second strip
-// bitmap is captured with the navbar left visible and only the
-// droplet subtree (plus the bar's veil View) hidden; the droplet
-// samples it ALWAYS now (barMix 1), because the re-rendered
-// LensTabIcon is deleted and the bar strip is the only way the
-// icons are visible through the droplet at rest too. Captured
-// whenever the droplet is shown; at rest it is no longer skipped.
-// Both bitmaps are strips with the same origin, so the mapping is
-// unchanged.
+// bitmap is built with the background photo + a synthetic pill
+// surface (see BUILD 14); the droplet samples it ALWAYS now
+// (barMix 1). Captured whenever the droplet is shown; at rest it
+// is no longer skipped. Both bitmaps are strips with the same
+// origin, so the mapping is unchanged.
 // BUILD 14 — SYNTHETIC PILL SURFACE. The build 13 strip CANNOT
 // contain the bar's live glass by construction (GlassView.draw()
 // short-circuits during any capture, and a hardware RenderNode
@@ -78,11 +75,26 @@
 // a synthetic pill surface (the photo under the pill region,
 // software-blurred to the chain blur radius and tinted at the
 // 0.10 mix) + the navbar's non-glass content (icons, labels,
-// edge light) drawn over it — see captureBarStripSynthetic.
+// edge light) drawn over it — DELETED in build 16, see
+// captureBarStripSynthetic.
 // The droplet's own rim bend + chain blur apply on top, as
 // before. If the synthetic path is unavailable the capture falls
 // back to the plain build 13 capture and logs it (readout synth
 // N), never a silent claim.
+// BUILD 16 — NO ICONS IN THE BAR STRIP, EVER. Haziq: stop
+// duplicating the icons in the back. The build 14 step 3 (drawing
+// the navbar root subtree — icons, labels, edge light — over the
+// synthetic pill) is DELETED, and both plain-capture fallbacks
+// are neutralised: when there is no usable background strip the
+// bar capture is SKIPPED outright (the droplet reuses the last
+// bar frame) instead of falling back to a plain capture that
+// would put the icons back. The bar bitmap is now photo +
+// synthetic pill ONLY — no icons, no labels, no bar edge light
+// (the droplet keeps its own DropletEdgeLight above the glass).
+// The icons render only in the single front row in TS, above the
+// droplet, always. Consequence: the droplet no longer magnifies
+// the icons at all; on hold it is a clear enlarged capsule
+// (sampled photo scaled 1.4x) sitting behind crisp 1.0x icons.
 // HONEST LIMIT: the bar's own live glass (its refraction/blurs)
 // cannot be in a software capture — a hardware RenderNode cannot
 // draw into the software capture canvas, and every glass view
@@ -122,13 +134,12 @@ internal class SharedBackdrop(private val scale: Int) {
    *     has used; the bar and the droplet at rest sample it.
    *   - bar: the bar-included strip. BUILD 14: BUILT, not just
    *     captured — background photo + a synthetic pill surface
-   *     (blurred photo + tint under the pill region) + the
-   *     navbar's non-glass content drawn over it (see
-   *     captureBarStripSynthetic). The droplet samples it ALWAYS
-   *     now (barMix 1), at rest as well as on hold — the
-   *     re-rendered LensTabIcon is deleted, so this is the only
-   *     way the icons are visible through the droplet.
-   *     Captured whenever the droplet is shown.
+   *     (blurred photo + tint under the pill region) (see
+   *     captureBarStripSynthetic). BUILD 16: NO icons, labels or
+   *     edge light are drawn into it anymore — the bar bitmap is
+   *     photo + synthetic pill ONLY. The droplet samples it ALWAYS
+   *     now (barMix 1), at rest as well as on hold. Captured
+   *     whenever the droplet is shown.
    * Both bitmaps are strips with the same origin, so the
    * bitmapOriginY mapping is the same for both.
    */
@@ -229,19 +240,14 @@ internal class SharedBackdrop(private val scale: Int) {
     return captureStrip(root, frame, bg)
   }
 
-  /**
-   * BUILD 13 — the second strip capture: same strip as the
-   * background-only capture, but with the navbar left VISIBLE and
-   * only the droplet subtree (plus the bar's veil View) hidden
-   * (the caller hides them). The droplet samples this bitmap
-   * ALWAYS now (barMix 1), so the icons are visible through the
-   * droplet at rest as well as on hold — the re-rendered
-   * LensTabIcon is deleted. Called whenever the droplet is shown;
-   * one extra software draw of the same strip per frame.
-   */
-  fun captureBarStripIfNeeded(root: View, frame: Long): Throwable? {
-    return captureStrip(root, frame, bar)
-  }
+  // BUILD 16: captureBarStripIfNeeded is DELETED. It was the
+  // plain build 13 capture (navbar visible, icons drawn into the
+  // bar strip) and the fallback for both the synthetic path and
+  // the no-bar-rect path in GlassView — every use of it put the
+  // back copy of the icons back in. The bar strip is now built
+  // ONLY by captureBarStripSynthetic (photo + synthetic pill,
+  // no icons); when that cannot run, the bar capture is skipped
+  // and the droplet reuses the last bar frame.
 
   private fun captureStrip(root: View, frame: Long, target: StripCapture): Throwable? {
     val density = root.resources.displayMetrics.density
@@ -320,36 +326,34 @@ internal class SharedBackdrop(private val scale: Int) {
    *      under everything);
    *   2. the synthetic pill: the photo under the pill region,
    *      software-blurred to blurDp and tinted at tintMix,
-   *      clipped to the pill's rounded rect (drawSyntheticPill);
-   *   3. the navbar's NON-GLASS content drawn over it — the
-   *      navbar root subtree (icons, labels, edge light). The
-   *      glass views skip their draw while capturing is true, so
-   *      the bar glass and the droplet contribute nothing; the
-   *      caller hides the droplet frame and the bar's veil View
-   *      (both restored in `finally`). The whole root is NOT
-   *      drawn here: root.draw would repaint the photo over the
-   *      pill and erase step 2.
-   * The caller passes the bar rect and the navbar root rect in
-   * ROOT pixels (layout rects, from GlassView). The strip, the
-   * bitmap size and the origin are the same as the background
-   * strip's, so the droplet's mapping is unchanged. One Logcat
-   * line per bar capture (success or fallback), so the device
-   * check can see which path actually ran.
-   * Falls back to the plain build 13 capture (captureStrip with
-   * the navbar visible) when there is no usable background strip
-   * to build from — and says so, in the log and in
-   * lastBarCaptureSynthetic (false), never silently.
-   * @return null on success (or a no-op), or the throwable if a
-   * draw refused a software draw.
+   *      clipped to the pill's rounded rect (drawSyntheticPill).
+   * BUILD 16: there is NO step 3 anymore. Build 14 drew the
+   * navbar's NON-GLASS content over the pill here (navbarRoot.draw
+   * — icons, labels, edge light), which is exactly the back copy
+   * of the icons Haziq rejects. The bar bitmap is photo +
+   * synthetic pill ONLY; the icons render only in the single
+   * front row in TS, above the droplet, always. The caller passes
+   * the bar rect in ROOT pixels (layout rect, from GlassView).
+   * The strip, the bitmap size and the origin are the same as the
+   * background strip's, so the droplet's mapping is unchanged.
+   * One Logcat line per bar capture (success or skip), so the
+   * device check can see which path actually ran.
+   * BUILD 16 — NO PLAIN-CAPTURE FALLBACK. When there is no usable
+   * background strip to build from (first frame, or the strip
+   * changed size between the two captures), the bar capture is
+   * SKIPPED outright — the droplet reuses the last bar frame —
+   * instead of falling back to a plain capture that would draw
+   * the navbar (icons) back in. lastBarCaptureSynthetic reads
+   * false and the skip is logged, never silent.
+   * @return null on success (or a no-op / skip), or the throwable
+   * if a draw refused a software draw.
    */
   fun captureBarStripSynthetic(
     root: View,
     frame: Long,
-    navbarRoot: View,
     dropletFrame: View,
     barVeil: View?,
     barRectPx: Rect,
-    navRectPx: Rect,
     tintRgb: FloatArray,
     tintMix: Float,
     blurDp: Float,
@@ -364,25 +368,26 @@ internal class SharedBackdrop(private val scale: Int) {
     val bgBmp = bg.bitmap
     val c = stripCanvas(bar, strip, root, density)
     val barBmp = bar.bitmap
-    if (bgBmp == null || bgBmp.isRecycled || c == null || barBmp == null ||
-      bgBmp.width != barBmp.width || bgBmp.height != barBmp.height
-    ) {
-      // No background strip to build from (first frame, or the
-      // strip changed size between the two captures): the plain
-      // build 13 capture — photo + icons, no pill surface.
+    if (c == null || barBmp == null) {
+      // No bar bitmap to draw into: skip outright. A plain capture
+      // here would draw the navbar (icons) back in — build 16
+      // forbids it, so the droplet reuses the last bar frame.
       lastBarCaptureSynthetic = false
-      Log.w(TAG, "bar capture: no usable bg strip, plain capture (no synthetic pill)")
-      val frameWasVisible = dropletFrame.visibility
-      val veilWasVisible = barVeil?.visibility
-      return try {
-        dropletFrame.visibility = View.INVISIBLE
-        if (barVeil != null) barVeil.visibility = View.INVISIBLE
-        captureStrip(root, frame, bar)
-      } finally {
-        dropletFrame.visibility = frameWasVisible
-        if (barVeil != null && veilWasVisible != null) barVeil.visibility = veilWasVisible
-      }
+      Log.w(TAG, "bar capture: no bar bitmap, skipping bar capture (droplet reuses last bar frame)")
+      return null
     }
+    if (bgBmp == null || bgBmp.isRecycled) {
+      // No background strip to build from (first frame, or the
+      // strip changed size between the two captures): skip
+      // outright, for the same reason — never a plain capture.
+      lastBarCaptureSynthetic = false
+      Log.w(TAG, "bar capture: no usable bg strip, skipping bar capture (droplet reuses last bar frame)")
+      return null
+    }
+    // A size mismatch between the bg and bar bitmaps (if it ever
+    // happens — the strip is fixed within a frame, so it should
+    // not) is harmless: drawBitmap clips to the canvas, and rows
+    // past the strip are never sampled.
     val frameWasVisible = dropletFrame.visibility
     val veilWasVisible = barVeil?.visibility
     dropletFrame.visibility = View.INVISIBLE
@@ -394,26 +399,16 @@ internal class SharedBackdrop(private val scale: Int) {
       c.drawBitmap(bgBmp, 0f, 0f, null)
       // 2. The synthetic pill: blurred photo + tint, clipped to the pill.
       drawSyntheticPill(c, bgBmp, barRectPx, strip.top, tintRgb, tintMix, blurDp, density)
-      // 3. The navbar's non-glass content over it. The canvas is
-      // scaled to bitmap px and translated by the navbar root's own
-      // position in the root, so the icons land exactly where the
-      // live bar draws them. (A point p in navbar-local coords maps
-      // to ((p.x + navLeft) / scale, (p.y + navTop - stripTop) /
-      // scale) — the root point, shifted to the strip origin, at
-      // half resolution.)
-      c.save()
-      val s = 1f / scale
-      c.scale(s, s)
-      c.translate(navRectPx.left.toFloat(), (navRectPx.top - strip.top).toFloat())
-      navbarRoot.draw(c)
-      c.restore()
+      // BUILD 16: NO step 3. Nothing is drawn over the pill — no
+      // navbar root, no icons, no labels, no bar edge light. The
+      // droplet keeps its own DropletEdgeLight above the glass.
       // Mark captured ONLY after a successful draw (build 14 — see captureStrip).
       bar.capturedFrame = frame
       bar.capturedStripTopPx = strip.top
       bar.capturedStripHeightPx = strip.height()
       bar.stripTopPx = strip.top
       lastBarCaptureSynthetic = true
-      Log.d(TAG, "bar capture: synthetic pill drawn, strip ${strip.width()}x${strip.height()} bar ${barBmp.width}x${barBmp.height} pill ${barRectPx.width()}x${barRectPx.height()} root px")
+      Log.d(TAG, "bar capture: synthetic pill drawn (icons NOT drawn, build 16), strip ${strip.width()}x${strip.height()} bar ${barBmp.width}x${barBmp.height} pill ${barRectPx.width()}x${barRectPx.height()} root px")
       null
     } catch (t: Throwable) {
       lastBarCaptureSynthetic = false
@@ -532,9 +527,11 @@ internal class SharedBackdrop(private val scale: Int) {
 
     /**
      * BUILD 14: true when the last bar capture actually drew the
-     * synthetic pill surface (false after a plain fallback or a
-     * failed capture). Read by GlassView for the debug readout —
-     * the proof the pill is really in the bar strip.
+     * synthetic pill surface (false after a skip or a failed
+     * capture). Read by GlassView for the debug readout — the
+     * proof the pill is really in the bar strip. BUILD 16: the
+     * plain-capture fallback is gone, so false now means "skipped
+     * or failed", never "plain capture ran".
      */
     @Volatile
     var lastBarCaptureSynthetic = false

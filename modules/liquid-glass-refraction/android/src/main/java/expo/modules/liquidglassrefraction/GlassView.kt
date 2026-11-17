@@ -561,10 +561,8 @@ class GlassView(context: Context, appContext: AppContext) : View(context),
     // BUILD 14 — BAR-INCLUDED CAPTURE WITH A SYNTHETIC PILL
     // SURFACE (droplet only, ALWAYS). Build 12 captured this strip
     // only while held; build 13 deletes the re-rendered icon
-    // entirely — the icons stay BELOW the droplet (while held) and
-    // are seen only through the glass — so the droplet must sample
-    // the bar-included strip at REST too, or the active tab's icon
-    // would be invisible under it.
+    // entirely, so the droplet must sample the bar-included strip
+    // at REST too.
     //
     // WHY SYNTHETIC (the build 13 failure, third build in a row
     // the sim claimed the bar was visible and the device disagreed):
@@ -580,12 +578,20 @@ class GlassView(context: Context, appContext: AppContext) : View(context),
     // longer pretends to contain the bar: SharedBackdrop builds
     // the bar bitmap as background photo + a SYNTHETIC pill surface
     // (a software-blurred copy of the photo under the pill region,
-    // tinted at the 0.10 mix) + the navbar's non-glass content
-    // (icons, labels, edge light) drawn over it. The droplet's own
-    // rim bend + chain blur apply on top, as before. If the
-    // synthetic path is ever unavailable (no bg strip, no bar
-    // rect), it falls back to the plain build 13 capture and logs
-    // it — never a silent claim.
+    // tinted at the 0.10 mix). The droplet's own rim bend + chain
+    // blur apply on top, as before.
+    //
+    // BUILD 16 — NO ICONS IN THE BAR STRIP. Build 14 also drew
+    // the navbar's non-glass content (icons, labels, edge light)
+    // over the synthetic pill, and fell back to a plain capture
+    // (navbar visible) when the synthetic path was unavailable.
+    // Both are deleted: the bar bitmap is photo + synthetic pill
+    // ONLY, and when the synthetic path cannot run (no bg strip,
+    // no bar rect) the bar capture is SKIPPED outright — the
+    // droplet reuses the last bar frame — and the skip is logged
+    // with the synth flag reading N, never a silent claim. The
+    // icons render only in the single front row in TS, above the
+    // droplet, always; the droplet no longer magnifies them.
     if (mode == "droplet") {
       val dropletFrame = findDropletFrame()
       GlassDebugState.dropletFrameFound = dropletFrame != null
@@ -594,37 +600,22 @@ class GlassView(context: Context, appContext: AppContext) : View(context),
       if (dropletFrame != null) {
         val barView = findBarView()
         val barRect = Rect()
-        val navRect = Rect()
-        val navRoot = navbarRoot
         val haveBarRect = barView != null && layoutRectInRootFrom(barView, barRect)
-        val haveNavRect = navRoot != null && layoutRectInRootFrom(navRoot, navRect)
-        val barFailure = if (haveBarRect && haveNavRect && navRoot != null) {
+        val barFailure: Throwable? = if (haveBarRect) {
           cap.captureBarStripSynthetic(
-            root, root.drawingTime, navRoot, dropletFrame, barVeil,
-            barRect, navRect, tintColor, tintMix, blurRadiusDp,
+            root, root.drawingTime, dropletFrame, barVeil,
+            barRect, tintColor, tintMix, blurRadiusDp,
           )
         } else {
-          // Fallback: the plain build 13 capture (droplet subtree
-          // + bar veil hidden, navbar visible). Never a crash, and
-          // the readout's synth flag stays N so the fallback is
-          // visible instead of claimed away.
-          if (!haveBarRect) {
-            Log.w(TAG, "bar capture: no bar rect, falling back to the plain capture")
-          } else {
-            Log.w(TAG, "bar capture: no navbar root rect, falling back to the plain capture")
-          }
-          val frameWasVisible = dropletFrame.visibility
-          val veilWasVisible = barVeil?.visibility
-          try {
-            dropletFrame.visibility = View.INVISIBLE
-            if (barVeil != null) barVeil.visibility = View.INVISIBLE
-            cap.captureBarStripIfNeeded(root, root.drawingTime)
-          } finally {
-            dropletFrame.visibility = frameWasVisible
-            if (barVeil != null && veilWasVisible != null) {
-              barVeil.visibility = veilWasVisible
-            }
-          }
+          // No bar rect: skip the bar capture outright. The old
+          // fallback (plain build 13 capture, navbar visible)
+          // would draw the icons back into the bar strip — build
+          // 16 forbids it. Never a crash, and the synth flag is
+          // set N here so the skip is visible instead of claimed
+          // away; the droplet reuses the last bar frame.
+          Log.w(TAG, "bar capture: no bar rect, skipping bar capture (droplet reuses last bar frame)")
+          SharedBackdrop.lastBarCaptureSynthetic = false
+          null
         }
         GlassDebugState.barSynthetic = SharedBackdrop.lastBarCaptureSynthetic
         if (barFailure != null) {
@@ -1096,10 +1087,11 @@ class GlassView(context: Context, appContext: AppContext) : View(context),
    * this view's rectangle inside the shared strip bitmap (already
    * computed by onDraw); the bar bitmap shares the strip, so the
    * same rect maps it. The droplet ALWAYS samples the bar strip
-   * now (barMix 1 whenever the node holds it): the re-rendered
-   * LensTabIcon is deleted, so the bar image is the ONLY way the
-   * icons are visible through the droplet — at rest as well as on
-   * hold. `useBarNode` (see onDraw) says the node holds the BAR
+   * now (barMix 1 whenever the node holds it). BUILD 16: the bar
+   * strip is photo + synthetic pill ONLY — no icons, no labels,
+   * no edge light — so the droplet shows the pill surface behind
+   * the icons, which render only in the single front row in TS,
+   * above the droplet, always. `useBarNode` (see onDraw) says the
    * strip: then `backdrop` is the blurred bar image and the input
    * shader is the background strip; otherwise `backdrop` is the
    * blurred background and the input is the bar strip. nodeIsBar
@@ -1129,9 +1121,10 @@ class GlassView(context: Context, appContext: AppContext) : View(context),
     // Build 8 DIAGNOSTIC, kept: the bar's coherent displacement
     // scales by bendScale (1.0 shipped, 3.0 diagnostic). The
     // droplet runs at DROPLET_BEND_SCALE (0.12, build 13): its
-    // bend is tamed so the icons seen through it stay clean, while
-    // the rim still bends enough to read as glass. The bar is
-    // untouched (its refraction was confirmed right in build 9).
+    // bend is tamed so the pill surface behind the icons stays
+    // clean, while the rim still bends enough to read as glass.
+    // The bar is untouched (its refraction was confirmed right in
+    // build 9).
     shader.setFloatUniform(
       "bendScale",
       if (mode == "droplet") DROPLET_BEND_SCALE else bendScale,
@@ -1146,11 +1139,11 @@ class GlassView(context: Context, appContext: AppContext) : View(context),
     val mag = if (mode == "droplet") 1f + (magnification - 1f) * heldAnim else 1f
     shader.setFloatUniform("magnification", mag)
     // BUILD 13: the droplet always shows the bar-included strip
-    // (barMix 1) whenever the node holds it — the bar image is
-    // the only way the icons are visible through the droplet now
-    // that the re-rendered LensTabIcon is deleted. The bar always
-    // runs at 0. If no bar strip exists yet, barMix is 0 and the
-    // droplet falls back to the background-only bitmap.
+    // (barMix 1) whenever the node holds it. BUILD 16: the bar
+    // image is photo + synthetic pill only (no icons) — the icons
+    // sit above the droplet in TS. The bar always runs at 0. If
+    // no bar strip exists yet, barMix is 0 and the droplet falls
+    // back to the background-only bitmap.
     val barBmp = if (mode == "droplet") shared?.barBitmap else null
     val barMix = if (useBarNode) 1f else 0f
     // BUILD 14: publish the mix and the hold animation for the
@@ -1303,12 +1296,14 @@ uniform float magnification;
 // BUILD 14: the bar-included backdrop (a second strip capture: the
 // background photo + a SYNTHETIC pill surface — a software-blurred
 // copy of the photo under the pill region, tinted at the 0.10 mix —
-// with the navbar's non-glass content, edge light, icons and labels,
-// drawn over it; only the droplet subtree and the bar's veil hidden)
+// with NO icons, labels or edge light drawn over it (build 16 —
+// the build 14 step 3 that drew the navbar's non-glass content
+// over the pill is deleted, and the plain-capture fallbacks are
+// gone; only the droplet subtree and the bar's veil hidden)
 // and the mix from the background-only backdrop to it. The droplet
-// ALWAYS runs at 1.0 now — the re-rendered LensTabIcon is deleted,
-// so the bar image is the only way the icons are visible through
-// the droplet, at rest as well as on hold. The bar always runs at
+// ALWAYS runs at 1.0 now. BUILD 16: the droplet shows the pill
+// surface behind the icons, which render only in the single front
+// row in TS, above the droplet, always. The bar always runs at
 // 0.0. HONEST LIMIT (unchanged): the bar's own LIVE glass is not in
 // the bar-included capture (a hardware RenderNode cannot draw into
 // the software capture canvas), so the pill surface is synthetic —
@@ -1413,8 +1408,9 @@ half4 main(float2 position) {
     // rainbow is deleted.
     // BUILD 13: BOTH backdrops are sampled at the same uv and
     // mixed by barMix — the droplet always runs at barMix 1 (the
-    // bar strip is the only way the icons are visible through it),
-    // so the sample is the bar image at rest as well as on hold.
+    // bar strip is the photo + synthetic pill surface behind the
+    // icons), so the sample is the bar image at rest as well as on
+    // hold.
     // The mix happens BEFORE the tint/bend/sheens, so the whole
     // material — bend, vibrancy, sheen — operates on the mixed
     // image, exactly as if the bar had been the backdrop all along.

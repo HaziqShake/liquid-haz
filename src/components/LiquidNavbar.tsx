@@ -424,6 +424,57 @@
  *    0.5, magBase about b), so no shader change; the frame scale
  *    IS the magnification (shader M stays 1.0).
  *
+ * BUILD 16 (17 Nov 2026). Haziq tested build 15 on his phone:
+ * STOP RAISING THE ICONS, STOP DUPLICATING THEM IN THE BACK, the
+ * icons are still not in the middle, make the active icon fade in
+ * as the droplet gets closer (even on tap), do not raise the icons,
+ * render icons only in the front. The droplet/icon subsystem is
+ * REBUILT FROM SCRATCH again (standing rule):
+ * 1. NO RAISE, EVER. GROUP_CENTER_DP, the shiftStyle/labelStyle
+ *    translateY, hoverAmt and its reaction are all DELETED. The
+ *    icon row never moves vertically in any state: the icon sits
+ *    dead on the bar centreline at every labelFraction (the label
+ *    hangs below it, absolutely positioned), and the droplet frame
+ *    is centred on the same centreline. The icon+label GROUP
+ *    centroid is therefore +9dp (expanded, labels shown) / 0
+ *    (shrunk) by construction — no shift can centre the group in
+ *    both states without moving the icon off the centreline, so
+ *    none is attempted. The icon-on-centreline invariant is the
+ *    spec now.
+ * 2. NO BACK ICONS. The bar-strip capture no longer draws the
+ *    navbar root at all (SharedBackdrop.captureBarStripSynthetic
+ *    step 3 deleted; both plain-capture fallbacks neutralised):
+ *    the bar bitmap is photo + synthetic pill ONLY. The droplet
+ *    overlay's z-order swap is deleted too — fixed zIndex 2,
+ *    row stays 3, so the icons render only in the single front
+ *    row, above the droplet, always. CONSEQUENCE: the droplet no
+ *    longer magnifies the icons at all; on hold it is a clear
+ *    enlarged capsule (sampled photo scaled 1.4x) sitting behind
+ *    crisp 1.0x icons. That is what Haziq prescribed.
+ * 3. DROPLET GEOMETRY FIX. dropletRectFor now insets BOTH slot
+ *    edges by 4dp (left = max(4, slotLeft + 4), right = min(barW
+ *    - 4, slotRight - 4)), so the frame centre sits exactly on
+ *    the tab centre on end tabs too — build 15's clamp put it
+ *    ~2dp off. Frame is slot - 8dp wide on every tab now.
+ * 4. PROXIMITY FADE. The visual active state is continuous:
+ *    per tab, prox = clamp(1 - |dropletPos - index|, 0, 1) on the
+ *    UI thread, fed through interpolateColor between iconInactive
+ *    and iconActive — 1 only at distance 0, 0 at the neighbouring
+ *    tab's centre, 0.5 mid-glide. The tap glide (450ms ease-out)
+ *    and the hold/drag are covered by the same path, no separate
+ *    branch, no HOVER_THRESHOLD radius. The icon colour arrives
+ *    via useAnimatedProps on an Animated.createAnimatedComponent
+ *    wrapping the Phosphor icon (it renders react-native-svg
+ *    paths, colour is a plain prop); the label colour via an
+ *    Animated.Text style. NO second overlaid icon copy, no
+ *    runOnJS + setState. The weight switch is DELETED — all icons
+ *    `regular`, colour carries the fade. The logical selection
+ *    machinery (activatedSv, hover threshold, startGlide
+ *    completion) is UNCHANGED; only the visual state is decoupled
+ *    from selectedIndex. At rest dropletPos == selectedIndex, so
+ *    prox reproduces the old look exactly.
+ * 5. versionCode 16 (app.json, single source; CI mints build-16).
+ *
  * PERFORMANCE. The glass costs one half-resolution STRIP capture
  * per frame (BUILD 11: the union of the glass rects + 16dp
  * margin, ~145dp tall instead of the ~800dp full root), shared
@@ -441,12 +492,14 @@
  * plain ScrollView.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, useWindowDimensions, View, type ViewStyle } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, StyleSheet, useWindowDimensions, View, type ViewStyle } from 'react-native';
 import Animated, {
   Easing,
+  interpolateColor,
   runOnJS,
   runOnUI,
+  useAnimatedProps,
   useAnimatedReaction,
   useAnimatedStyle,
   useDerivedValue,
@@ -507,32 +560,14 @@ const DROPLET_INSET = 4;
  *  still inside the 16dp margin, so no strip change was needed —
  *  the margin is now the binding constraint (verify on device). */
 const HOLD_SCALE = 1.4;
-/** BUILD 15 — GROUP CENTRING, 7.5dp (was GROUP_SHIFT_DP, the
- *  build 13/14 "selection raise"). The magnitude is unchanged
- *  but the MEANING is: the icon+label group's span midpoint sits
- *  7.5dp below the bar centreline at full labels (icon top -13dp,
- *  label text bottom +28dp), so a uniform zoom about the centre
- *  pushes the label out of the held droplet. The tab the droplet
- *  is currently COVERING (hoveredIndex — the tab under the
- *  droplet centre, not selectedIndex alone) has its icon+label
- *  group translated UP by this much, scaled by labelFraction and
- *  lift and the tab's hover amount (1 while covered, 0 otherwise,
- *  eased over 200ms) — at rest (lift 0) the bar layout is exactly
- *  as before; on hold the group is centred on the droplet
- *  centreline, so the held content is centred and inside with
- *  symmetric margins. At 1.4x the held half-heights are 39.2dp
- *  (expanded) and 29.4dp (shrunk); the centred span is ±20.5dp,
- *  leaving symmetric margins ~18.7dp / 8.9dp — it fits. This is
- *  geometric centring, NOT a selection effect: there is no
- *  "raised active icon" anymore, the active state is the
- *  activated colour only. */
-const GROUP_CENTER_DP = 7.5;
 /** BUILD 15 — HOVER ACTIVATION THRESHOLD. While the finger is
  *  down, a tab activates when the droplet centre comes within
  *  this distance (in tab units) of the tab centre — 0.28 of the
  *  ~92.5dp slot, i.e. ~26dp — NOT at round()'s 0.5 midpoint
  *  (~46dp). A tap or snap glide activates only on landing (see
- *  startGlide), never by this threshold. */
+ *  startGlide), never by this threshold. BUILD 16: this threshold
+ *  is LOGICAL activation only — the visual proximity fade does
+ *  NOT use it (see TabContent); the fade radius is 1.0 slot. */
 const HOVER_THRESHOLD = 0.28;
 /** How far the droplet lifts above the bar while held, in dp.
  *  BUILD 10: 0 — REMOVED. Build 9's droplet floated up on hold
@@ -746,12 +781,13 @@ function DropletEdgeLight({
  * disagree:
  *
  *   The droplet rect is the BAR rect inset DROPLET_INSET (4dp) on
- *   all sides, intersected with the tab slot: left = max(4,
- *   slotLeft), right = min(barW - 4, slotRight), top = 4, bottom =
- *   barH - 4, height = barH - 8. Middle tabs are unaffected (their
- *   slot rect already sits inside the inset bar); end tabs become
- *   4dp narrower, and their cap centre lands EXACTLY on the bar's
- *   cap centre — a uniform 4dp outline gap at every angle, which a
+ *   all sides, intersected with the tab slot inset by the same
+ *   4dp: left = max(4, slotLeft + 4), right = min(barW - 4,
+ *   slotRight - 4), top = 4, bottom = barH - 4, height = barH -
+ *   8. Middle tabs are unaffected (their slot rect already sits
+ *   inside the inset bar); end tabs are 4dp narrower than build
+ *   15's, and their cap centre lands EXACTLY on the bar's cap
+ *   centre — a uniform 4dp outline gap at every angle, which a
  *   slot-width capsule centred on its tab cannot have (build 11's
  *   failure: cap centres 4dp apart, gap 0dp at the centreline, 4dp
  *   at top/bottom).
@@ -763,12 +799,14 @@ function DropletEdgeLight({
  *   layout rect never changes. Radius is height / 2, which IS
  *   barH/2 - 4, the concentric rule.
  *
- *   Consequence to know about: on end tabs the droplet centre
- *   shifts ~2dp off the tab centre (frame left 4 vs 0). The icon
- *   stays centred on the tab; the shader magnification centre is
- *   the frame centre. At 1.4x frame scale (BUILD 15) that 2dp
- *   offset shifts the magnified icon by ~0.8dp — negligible, the
- *   prescribed cost of concentricity.
+ *   BUILD 16: the frame centre sits EXACTLY on the tab centre on
+ *   every tab, end tabs included. Build 15 clamped only the bar
+ *   edge (left = max(4, slotLeft)), so on end tabs the frame was
+ *   slot - 4dp wide with its centre ~2dp off the tab centre; now
+ *   both slot edges are inset by 4dp, so the frame is slot - 8dp
+ *   wide everywhere and centred on its tab everywhere. The icon
+ *   (centred on the tab) and the droplet frame now share a
+ *   centreline exactly, in both bar states.
  */
 function dropletRectFor(
   barW: number,
@@ -780,132 +818,134 @@ function dropletRectFor(
   const slot = barW / tabCount;
   const slotLeft = pos * slot;
   const slotRight = slotLeft + slot;
-  const left = Math.max(DROPLET_INSET, slotLeft);
-  const right = Math.min(barW - DROPLET_INSET, slotRight);
+  const left = Math.max(DROPLET_INSET, slotLeft + DROPLET_INSET);
+  const right = Math.min(barW - DROPLET_INSET, slotRight - DROPLET_INSET);
   const height = barH - DROPLET_INSET * 2;
   return { left, width: right - left, height, top: DROPLET_INSET };
 }
 
 /**
- * BUILD 15 — one tab's icon + label, ON THE SINGLE ICON ROW.
- * There is NO re-rendered icon above the droplet glass (LensTabIcon
- * is deleted) and NO second copy of the row anymore (build 14's
- * dual row is deleted): the icons stay in one row and are seen
- * either crisp above the droplet (at rest — the droplet sits
- * BELOW the row) or only through the glass (on hold — the droplet
- * sits ABOVE the row). The icon does NOT scale (the frame scale
- * IS the hold magnification — scaling the icon as well would
- * double-magnify it in the capture), and the label does NOT scale
- * either.
+ * BUILD 16 — one tab's icon + label, ON THE SINGLE ICON ROW.
+ * Rebuilt from scratch (standing rule). There is NO re-rendered
+ * icon above the droplet glass (LensTabIcon is deleted) and NO
+ * second copy of the row anymore (build 14's dual row is deleted):
+ * the icons stay in one row and are ALWAYS seen crisp above the
+ * droplet (the droplet sits BELOW the row, fixed zIndex 2 vs the
+ * row's 3) — never through the glass, never blurred or veiled by
+ * it. The icon does NOT scale (the frame scale IS the hold
+ * magnification — scaling the icon as well would double-magnify
+ * it in the capture), and the label does NOT scale either.
  *
- * THE GROUP CENTRING (GROUP_CENTER_DP, 7.5dp), BUILD 15: the
- * icon+label group's span midpoint sits 7.5dp below the bar
- * centreline at full labels, so a uniform zoom about the centre
- * would push the label out of the held droplet. The tab the
- * droplet is currently COVERING (hoveredIndex — the tab under
- * the droplet centre) has its icon and label translated UP
- * together by 7.5dp x labelFraction x lift x hoverAmt. Build 14
- * graded the shift by the LANDED tab only, which left the
- * passing droplet showing the incoming tab's group unshifted
- * (up to 7.5dp low) mid-glide; the shift now follows the droplet
- * itself, so the content under the droplet is centred wherever
- * the droplet is, including mid-glide. At rest (lift 0) the
- * shift is exactly 0 and the bar layout is unchanged.
+ * NO RAISE. There is no vertical shift of any kind here: no
+ * GROUP_CENTER_DP, no hoverAmt, no translateY on the icon or the
+ * label, in any state. The icon sits dead on the bar centreline
+ * at every labelFraction (tabSlot justifyContent center, label
+ * absolutely positioned below it) and the droplet frame is
+ * centred on the same centreline, so icon centroid == droplet
+ * centre == 0 in all states. The icon+label GROUP centroid is
+ * +9dp expanded / 0 shrunk by construction (icon 26dp centred,
+ * label text hanging +14..+28dp, centre +21dp) — documented, not
+ * forced: no fixed layout can centre the group in both states
+ * without moving the icon off the centreline, and the shift is
+ * forbidden.
+ *
+ * PROXIMITY FADE. The visual active state is CONTINUOUS and
+ * decoupled from selectedIndex: prox = clamp(1 - |dropletPos -
+ * index|, 0, 1), derived on the UI thread from dropletPos itself
+ * (tab units, radius 1.0 slot) — 1 only at distance 0, 0 at the
+ * neighbouring tab's centre, 0.5 mid-glide. The tap glide (450ms
+ * ease-out) and the hold/drag are covered by the same path with
+ * no separate branch, and HOVER_THRESHOLD (0.28) is NOT the fade
+ * radius. The colour is fed through interpolateColor between
+ * iconInactive and iconActive. The Phosphor icon's colour is a
+ * plain prop, not a style, so it arrives via useAnimatedProps on
+ * an Animated.createAnimatedComponent wrapping the icon
+ * (phosphor-react-native renders react-native-svg paths, colour
+ * is a plain prop on IconBase's Svg/G). The label colour arrives
+ * via an Animated.Text style. NO second overlaid icon copy faded
+ * by opacity, NO runOnJS + setState. The weight switch is GONE:
+ * all icons `regular`, colour carries the fade. At rest
+ * dropletPos == selectedIndex, so prox reproduces the old look
+ * exactly (1 for the active tab, 0 elsewhere). The LOGICAL
+ * selection machinery (activatedSv, hover threshold, startGlide
+ * completion) is untouched — only the visual state changed.
  */
 function TabContent({
   tab,
   index,
-  hoveredIndex,
-  lift,
+  dropletPos,
   labelFraction,
-  color,
-  weight,
+  iconActive,
+  iconInactive,
 }: {
   tab: LiquidTabItem;
   index: number;
-  hoveredIndex: SharedValue<number>;
-  lift: SharedValue<number>;
+  dropletPos: SharedValue<number>;
   labelFraction: SharedValue<number>;
-  color: string;
-  weight: 'fill' | 'regular';
+  iconActive: string;
+  iconInactive: string;
 }): React.JSX.Element {
   const Icon = tab.icon;
-  // BUILD 15: per-tab hover amount, eased toward 1 while this tab
-  // is the one under the droplet centre, 0 otherwise, over 200ms.
-  // The reaction fires only when hoveredIndex changes (the droplet
-  // centre crosses a slot boundary), never continuously.
-  const hoverAmt = useSharedValue(index === hoveredIndex.value ? 1 : 0);
-  useAnimatedReaction(
-    () => (index === hoveredIndex.value ? 1 : 0),
-    (target, prev) => {
-      if (prev !== null && target !== prev) {
-        hoverAmt.value = withTiming(target, {
-          duration: 200,
-          easing: Easing.out(Easing.cubic),
-        });
-      }
-    },
-    [hoveredIndex],
-  );
-  const shiftStyle = useAnimatedStyle(() => {
-    return {
-      transform: [
-        {
-          translateY:
-            -GROUP_CENTER_DP * labelFraction.value * lift.value * hoverAmt.value,
-        },
-      ],
-    };
+  // One animated wrapper per icon type, stable across renders —
+  // creating it inline would remount the icon every render.
+  const AnimatedIcon = useMemo(() => Animated.createAnimatedComponent(Icon), [Icon]);
+  // BUILD 16 — proximity: 1 when the droplet centre is on this
+  // tab, fading linearly to 0 at the neighbouring tab's centre.
+  const prox = useDerivedValue(() => {
+    'worklet';
+    const d = Math.abs(dropletPos.value - index);
+    return d >= 1 ? 0 : 1 - d;
   });
-  const labelStyle = useAnimatedStyle(() => {
-    return {
-      height: LABEL_DP * labelFraction.value,
-      opacity: labelFraction.value,
-      transform: [
-        {
-          translateY:
-            -GROUP_CENTER_DP * labelFraction.value * lift.value * hoverAmt.value,
-        },
-      ],
-    };
-  });
+  const iconAnimatedProps = useAnimatedProps(() => ({
+    color: interpolateColor(prox.value, [0, 1], [iconInactive, iconActive]),
+  }));
+  // The initial colour as a plain prop (the animated prop above
+  // takes over for every update): the rest value of prox, read
+  // once here on the JS thread — at rest dropletPos is the
+  // selected tab, so this is exactly the old static colour.
+  const d0 = Math.abs(dropletPos.value - index);
+  const initialColor = interpolateColor(d0 >= 1 ? 0 : 1 - d0, [0, 1], [iconInactive, iconActive]);
+  const labelStyle = useAnimatedStyle(() => ({
+    height: LABEL_DP * labelFraction.value,
+    opacity: labelFraction.value,
+  }));
+  const labelTextStyle = useAnimatedStyle(() => ({
+    color: interpolateColor(prox.value, [0, 1], [iconInactive, iconActive]),
+  }));
   return (
     <>
-      <Animated.View style={shiftStyle}>
-        <Icon size={ICON_DP} color={color} weight={weight} />
-      </Animated.View>
+      <View>
+        <AnimatedIcon size={ICON_DP} color={initialColor} animatedProps={iconAnimatedProps} weight="regular" />
+      </View>
       <Animated.View style={[styles.labelWrap, labelStyle]}>
-        <Text style={[styles.label, { color }]}>{tab.label}</Text>
+        <Animated.Text style={[styles.label, labelTextStyle]}>{tab.label}</Animated.Text>
       </Animated.View>
     </>
   );
 }
 
 /**
- * BUILD 15 — one full icon row (all tabs), rendered ONCE by
+ * BUILD 16 — one full icon row (all tabs), rendered ONCE by
  * LiquidNavbar. Build 14 rendered it twice (below copy opacity
- * lift / above copy opacity 1 - lift) so the icons could be crisp
- * at rest and seen through the glass on hold without any z-order
- * change. That duplication is deleted: the active state is the
- * activated colour only, and the DROPLET's z-order swaps instead
- * (below the row at rest, above it on hold). One copy means the
- * bar-strip capture (SharedBackdrop.captureBarStripSynthetic,
- * which draws navbarRoot) always shows each tab's icons exactly
- * once — there is no two-copies-sum-to-one invariant anymore.
+ * lift / above copy opacity 1 - lift); build 15 kept one row but
+ * swapped the DROPLET's z-order with it (below at rest, above on
+ * hold, icons seen through the glass). Both are deleted: one row,
+ * fixed zIndex 3, droplet fixed zIndex 2 below it — the icons
+ * render only in this front row, above the droplet, always. The
+ * row takes no selectedIndex (the visual active state is the
+ * per-tab proximity fade inside TabContent, driven by
+ * dropletPos), no hoveredIndex, no lift: the row never moves and
+ * never changes weight.
  */
 function IconRow({
   tabs,
-  selectedIndex,
-  hoveredIndex,
-  lift,
+  dropletPos,
   labelFraction,
   iconActive,
   iconInactive,
 }: {
   tabs: LiquidTabItem[];
-  selectedIndex: number;
-  hoveredIndex: SharedValue<number>;
-  lift: SharedValue<number>;
+  dropletPos: SharedValue<number>;
   labelFraction: SharedValue<number>;
   iconActive: string;
   iconInactive: string;
@@ -913,17 +953,15 @@ function IconRow({
   return (
     <>
       {tabs.map((tab, index) => {
-        const active = index === selectedIndex;
         return (
           <View key={tab.key} style={styles.tabSlot}>
             <TabContent
               tab={tab}
               index={index}
-              hoveredIndex={hoveredIndex}
-              lift={lift}
+              dropletPos={dropletPos}
               labelFraction={labelFraction}
-              color={active ? iconActive : iconInactive}
-              weight={active ? 'fill' : 'regular'}
+              iconActive={iconActive}
+              iconInactive={iconInactive}
             />
           </View>
         );
@@ -964,14 +1002,11 @@ export function LiquidNavbar({
   const dropletPos = useSharedValue(selectedIndex);
   // BUILD 15 — HOVERED TAB. The tab under the droplet centre:
   // clamp(round(dropletPos)), updated by the UI-thread reaction
-  // below on every dropletPos change. It drives TWO things: the
-  // per-tab group-centring amount (TabContent, via hoverAmt) and,
-  // while the finger is down, hover activation. It REPLACES
-  // build 14's landedIndex: the centring follows the droplet
-  // itself now, not the tab the last glide landed on — so the
-  // content under the droplet is centred wherever the droplet
-  // is, including mid-glide (build 14's trade-off was the
-  // incoming tab's group sitting up to 7.5dp low mid-glide).
+  // below on every dropletPos change. BUILD 16: it drives hover
+  // activation ONLY now — the build 15 per-tab group-centring
+  // amount (TabContent, via hoverAmt) is deleted with the shift
+  // itself. The visual active state is the proximity fade in
+  // TabContent, driven by dropletPos directly, not by this.
   const hoveredIndex = useSharedValue(selectedIndex);
   // BUILD 15 — LAST ACTIVATED TAB (UI thread). The index we last
   // told the parent about via runOnJS(onSelect). The duplicate
@@ -1012,8 +1047,7 @@ export function LiquidNavbar({
   // BUILD 15 — HOVER DERIVATION (UI thread). One reaction on
   // dropletPos + dragging:
   //   (a) hoveredIndex follows the tab under the droplet centre
-  //       (round, clamped) at all times — drag, glide, rest. The
-  //       per-tab centring amount eases toward it over 200ms.
+  //       (round, clamped) at all times — drag, glide, rest.
   //   (b) while the finger is down, a tab ACTIVATES when the
   //       droplet centre comes within HOVER_THRESHOLD (0.28) of
   //       its centre — not at round()'s 0.5 midpoint. Only when
@@ -1401,14 +1435,15 @@ export function LiquidNavbar({
   // in dropletFrameStyle below), with NO float-up and NO shape
   // change — the aspect ratio is identical at rest and held. The
   // shader's magnification is 1.0 now (the frame scale IS the
-  // magnification); WHILE HELD the icons are seen only through the
-  // glass, via the bar-included capture the droplet always samples
-  // — nothing is re-rendered above the glass. At REST the icons
-  // sit above the droplet (the above IconRow copy) and are never
-  // blurred or veiled by it. On hold the droplet's blur eases to 0
-  // and its veil fades to 0, so it is a clear magnifying lens, and
-  // its bend runs at 0.12x so the icons stay clean. At rest the
-  // droplet is the same glass as the bar (same refraction + blur).
+  // magnification); the icons are NEVER seen through the glass —
+  // they sit above the droplet in the single front row (fixed
+  // zIndex 3 over the droplet's 2) in every state, and the
+  // bar-included capture the droplet samples carries NO icons at
+  // all (BUILD 16: photo + synthetic pill only). On hold the
+  // droplet's blur eases to 0 and its veil fades to 0, so it is a
+  // clear enlarged capsule behind the icons, and its bend runs
+  // at 0.12x. At rest the droplet is the same glass as the bar
+  // (same refraction + blur).
   //
   // BUILD 13 — one shared rect, so the frame, its glass wrapper
   // and the edge light can never disagree. The radius is height /
@@ -1467,24 +1502,18 @@ export function LiquidNavbar({
   const dropletVeilStyle = useAnimatedStyle(() => ({
     opacity: settings.legibilityVeil * (1 - lift.value),
   }));
-  // BUILD 15 — HOLD-DEPENDENT Z-ORDER, NOT A DUAL ROW. Build 14
+  // BUILD 16 — FIXED Z-ORDER, NO SWAP, NO DUAL ROW. Build 14
   // rendered the icon row twice (below copy opacity lift, above
-  // copy opacity 1 - lift). That duplication is DELETED: one
-  // IconRow is rendered once (zIndex 3, below), and the droplet
-  // overlay swaps z-order with it — zIndex 2 at rest (below the
-  // row: icons crisp above the droplet, never blurred or veiled
-  // by it) and zIndex 4 on hold (above the row: icons seen only
-  // through the glass). The swap is driven by the `held` React
-  // state (mirrors lift > 0) as a plain zIndex change: the
-  // droplet is never unmounted, and there is NO opacity animation
-  // left on the icon row to mask a mid-ramp pop. KNOWN
-  // TRANSITION: at the first frames of the hold ramp the droplet
-  // is already above the icons while its blur/veil are still
-  // easing out (native heldAnim, ~200ms), so the icons pass
-  // briefly through the blurred glass before it clears — that is
-  // the honest cost of a plain z-order swap, and it is what the
-  // spec asks for. In the bar-strip capture the single row always
-  // shows each tab's icons exactly once.
+  // copy opacity 1 - lift); build 15 kept one row but swapped
+  // the DROPLET's z-order with it (2 at rest, 4 on hold, icons
+  // seen only through the glass on hold). Both are DELETED: one
+  // IconRow, fixed zIndex 3, droplet overlay fixed zIndex 2
+  // below it — the icons render only in the single front row,
+  // above the droplet, in every state. There is no mid-ramp
+  // transition anymore (nothing swaps), and the bar-strip capture
+  // draws no icons at all (photo + synthetic pill only), so there
+  // is no back copy of any icon anywhere. The droplet on hold is
+  // a clear enlarged capsule behind crisp 1.0x icons.
 
   const dark = settings.mode === 'dark';
   const tintColor: [number, number, number] = dark
@@ -1554,50 +1583,46 @@ export function LiquidNavbar({
               />
               <EdgeLight intensity={settings.edgeLight} aspect={barAspect} />
             </Animated.View>
-            {/* THE DROPLET, BUILD 15 (rebuilt from scratch): the icon
-                row is rendered ONCE now (zIndex 3, below) — build
-                14's dual row is deleted. The DROPLET swaps z-order
-                with it instead: at rest the droplet overlay is
-                zIndex 2, BELOW the icon row, so the icons sit above
-                the droplet, crisp, never blurred or veiled by it;
-                on hold it is zIndex 4, ABOVE the row, so the icons
-                are seen only through the glass, via the bar-included
-                capture the droplet glass always samples. The swap
-                is a plain zIndex change driven by `held` — no
-                crossfade, no opacity animation on the icon row.
-                The droplet itself is over the navbar AND (while
-                held) over the icons. The frame is the bar rect
-                inset 4dp on all sides intersected with the tab slot
-                (Anivio's shape, shape only), holding the same glass
-                as the bar. NOTHING is re-rendered above the glass
-                inside the frame anymore (LensTabIcon is deleted).
-                The edge light is the TOPMOST element of the
-                droplet. On hold the droplet does NOT lift: the
-                frame grows by a UNIFORM SCALE (HOLD_SCALE 1.4)
-                about its centre (its layout never changes), its
-                blur eases to 0 and its veil fades to 0, so it is a
-                clear magnifying lens over the navbar, and its bend
-                runs at 0.12x so the icons stay clean. It never
-                intercepts touches. */}
+            {/* THE DROPLET, BUILD 16 (rebuilt from scratch): the icon
+                row is rendered ONCE (zIndex 3) and the droplet
+                overlay is FIXED at zIndex 2, BELOW the icon row,
+                in every state — build 15's z-order swap (2 rest /
+                4 hold, icons seen only through the glass on hold)
+                is deleted, and so is build 14's dual row. The
+                icons sit above the droplet, crisp, never blurred
+                or veiled by it, at rest AND on hold. The droplet
+                itself is over the navbar only. The frame is the
+                bar rect inset 4dp on all sides intersected with
+                the tab slot inset 4dp (Anivio's shape, shape
+                only), holding the same glass as the bar. NOTHING
+                is re-rendered above the glass inside the frame
+                anymore (LensTabIcon is deleted), and the
+                bar-strip capture draws NO icons at all (photo +
+                synthetic pill only), so there is no back copy of
+                any icon anywhere. The edge light is the TOPMOST
+                element of the droplet. On hold the droplet does
+                NOT lift: the frame grows by a UNIFORM SCALE
+                (HOLD_SCALE 1.4) about its centre (its layout
+                never changes), its blur eases to 0 and its veil
+                fades to 0, so it is a clear enlarged capsule
+                behind the icons, and its bend runs at 0.12x. It
+                never intercepts touches. */}
             {/* THE SINGLE icon row (zIndex 3): the icons as the user
-                sees them at rest — crisp, above the droplet, never
-                blurred or veiled by it. On hold the droplet swaps
-                above it and the icons are seen only through the
-                glass. pointerEvents none, so it never intercepts
-                the gestures the bar owns. */}
+                sees them — crisp, above the droplet, never blurred
+                or veiled by it, at rest and on hold. pointerEvents
+                none, so it never intercepts the gestures the bar
+                owns. */}
             <Animated.View style={[styles.iconRow, { zIndex: 3 }]} pointerEvents="none">
               <IconRow
                 tabs={tabs}
-                selectedIndex={selectedIndex}
-                hoveredIndex={hoveredIndex}
-                lift={lift}
+                dropletPos={dropletPos}
                 labelFraction={labelFraction}
                 iconActive={iconActive}
                 iconInactive={iconInactive}
               />
             </Animated.View>
             <Animated.View
-              style={[styles.dropletOverlay, { zIndex: held ? 4 : 2 }]}
+              style={[styles.dropletOverlay, { zIndex: 2 }]}
               pointerEvents="none"
             >
               <Animated.View style={[styles.dropletFrame, dropletFrameStyle]}>
@@ -1621,10 +1646,10 @@ export function LiquidNavbar({
                     is hidden during that capture — so at rest this
                     veil is the droplet's only veil, and on hold
                     there is no veil inside the droplet at all.
-                    BUILD 15: at rest this veil only ever darkens
-                    the glass behind the icons — the visible icons
-                    are the single row ABOVE the droplet,
-                    untouched by it. */}
+                    BUILD 16: this veil only ever darkens the
+                    glass behind the icons — the visible icons are
+                    the single row ABOVE the droplet, untouched by
+                    it, at rest and on hold. */}
                 <Animated.View
                   style={[
                     StyleSheet.absoluteFill,
