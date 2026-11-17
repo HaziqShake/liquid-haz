@@ -8,6 +8,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # contents:write is needed for the GitHub Release step below
+    # (creating the build-<N> release + uploading the APK). The
+    # default GITHUB_TOKEN is read-only for contents.
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,6 +40,26 @@ jobs:
       - name: Expo prebuild (Android)
         run: npx expo prebuild --platform android --clean
 
+      # BUILD 15 — RELEASE SIGNING. The prebuild template signs
+      # release builds with the DEBUG keystore; the
+      # plugins/withReleaseSigning config plugin adds a release
+      # signingConfig that reads MYAPP_RELEASE_* from
+      # gradle.properties and FAILS the build if they are absent
+      # (a debug-signed release APK could never update the
+      # installed app in place — same package, same key, or the
+      # install fails outright). The keystore itself lives ONLY in
+      # GitHub Secrets (ANDROID_KEYSTORE_BASE64 etc.); it is never
+      # committed and never printed in logs.
+      - name: Restore release keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+          cat >> android/gradle.properties <<EOF
+          MYAPP_RELEASE_STORE_FILE=release.keystore
+          MYAPP_RELEASE_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MYAPP_RELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}
+          MYAPP_RELEASE_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
       - name: Limit native build to arm64-v8a
         run: printf '\nreactNativeArchitectures=arm64-v8a\n' >> android/gradle.properties
 
@@ -47,8 +72,72 @@ jobs:
       - name: Build release APK
         run: cd android && ./gradlew assembleRelease --no-daemon -x lint
 
+      # BUILD 15 — prove the update flow's native prerequisites
+      # are actually in the APK before shipping it: the install
+      # permission, the update FileProvider, and a release
+      # signature from the keystore above (not the debug key).
+      # The merged manifest is the ground truth (not app.json):
+      # if the provider merge ever drops, installApk() throws at
+      # runtime and the update modal's Install button is dead.
+      - name: Verify update prerequisites in the APK
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          test -f "$APK"
+          MERGED=android/app/build/intermediates/merged_manifests/release/AndroidManifest.xml
+          grep -q "android.permission.REQUEST_INSTALL_PACKAGES" "$MERGED"
+          grep -q "appupdater.fileprovider" "$MERGED"
+          KEY_FP=$(keytool -list -keystore android/app/release.keystore -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" -alias "${{ secrets.ANDROID_KEY_ALIAS }}" 2>/dev/null | grep -i "SHA-256" | awk '{print $2}')
+          APK_FP=$(keytool -printcert -jarfile "$APK" 2>/dev/null | grep -i "SHA-256" | awk '{print $2}')
+          test -n "$KEY_FP" && test "$KEY_FP" = "$APK_FP"
+          echo "APK signed with the release key ($APK_FP); install permission + FileProvider present."
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: liquid-glass-navbar-release-apk
           path: android/app/build/outputs/apk/release/app-release.apk
+
+      # BUILD 15 — GITHUB RELEASE, the update flow's source of
+      # truth. One release per build: tag build-<versionCode>,
+      # where versionCode comes from app.json (the single source —
+      # the same integer the app reads at runtime and displays in
+      # Settings). The release carries app-release.apk plus its
+      # .sha256, which the in-app download verifies before install.
+      # GATED: this workflow fires on every push to main, so the
+      # release is created ONLY when the tag does not exist yet —
+      # a second push without a versionCode bump (e.g. a fix
+      # commit) must not mint a duplicate release.
+      - name: Read build number from app.json
+        id: build_number
+        run: |
+          echo "version_code=$(node -p "require('./app.json').expo.android.versionCode")" >> "$GITHUB_OUTPUT"
+
+      - name: Check if this build already has a release
+        id: release_exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "build-${{ steps.build_number.outputs.version_code }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write SHA-256 for the APK
+        if: steps.release_exists.outputs.exists == 'false'
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          sha256sum "$APK" > "$APK.sha256"
+          cat "$APK.sha256"
+
+      - name: Publish release (APK + SHA-256)
+        if: steps.release_exists.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.build_number.outputs.version_code }}
+          name: Build ${{ steps.build_number.outputs.version_code }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/apk/release/app-release.apk.sha256

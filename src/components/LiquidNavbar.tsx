@@ -169,11 +169,11 @@
  * makes the bar big. There is no hold growth and no press scale on
  * the bar.
  *
- * MOTION: the droplet glides between tabs on exponential in-out
- * easing (BUILD 10: was one soft spring — elastic, jelly). No
- * coupled spring engine, no squash and stretch, no rubber
- * banding. Hold is a short timed ramp of the frame growth and the
- * magnification (BUILD 11).
+ * MOTION: the droplet glides between tabs on ease-out
+ * exponential easing (BUILD 15: Easing.out(Easing.exp), 450ms —
+ * was in-out). No coupled spring engine, no squash and stretch,
+ * no rubber banding. Hold is a short timed ramp of the frame
+ * growth and the magnification (BUILD 11).
  *
  * BUILD 11 (12 Nov 2026). Three things, on Haziq's build 10
  * verdict (two screenshots) and the need-fit port:
@@ -381,6 +381,49 @@
  *    removed (the native side forces DROPLET_BEND_SCALE for
  *    droplet mode).
  *
+ * BUILD 15 (17 Nov 2026). Haziq tested build 14 on his phone:
+ * the droplet subsystem is REBUILT FROM SCRATCH again (standing
+ * rule), six droplet changes plus the update flow (see
+ * src/updates/ and the BUILD 15 note at the end of this header):
+ * 1. NO RAISING THE ACTIVE ICON, SINGLE ICON RENDERING. The dual
+ *    IconRow (below copy opacity lift / above copy opacity
+ *    1 - lift) is deleted: one IconRow is rendered once, and the
+ *    DROPLET's z-order swaps instead — below the icon row at rest
+ *    (zIndex 2 vs the row's 3, icons crisp above the glass),
+ *    above it on hold (zIndex 4, icons seen only through the
+ *    glass). A plain z-order swap driven by the `held` React
+ *    state, NOT a crossfade: no opacity animation remains on the
+ *    icon row to mask a mid-ramp pop. Active state is the
+ *    activated colour only (fill white vs regular 60% white in
+ *    dark mode), which already existed.
+ * 2. CENTRING IS GEOMETRIC, NOT A SELECTION RAISE. The 7.5dp
+ *    shift is kept in magnitude but re-anchored: the icon+label
+ *    group's span midpoint sits 7.5dp below the bar centreline,
+ *    so the shift centres the group inside the enlarged droplet.
+ *    It now follows the HOVERED tab (the tab under the droplet
+ *    centre, hoveredIndex) instead of the landed tab, still
+ *    eased ~200ms, still x labelFraction x lift — 0 at rest, so
+ *    rest layout is byte-identical to build 14.
+ * 3. HOVER ACTIVATION. A UI-thread reaction on dropletPos derives
+ *    the hovered tab (round, clamped) and, while the finger is
+ *    down, activates a tab when the droplet centre comes within
+ *    0.28 of its centre (~26dp of the ~92.5dp slot) — not at the
+ *    round() midpoint.
+ * 4. ACTIVATION ONLY AFTER THE DROPLET IS ON THE TAB. selectTab
+ *    is split: startGlide moves the droplet (no onSelect) and
+ *    the withTiming completion callback activates, only if
+ *    (finished) — an interrupted glide activates nothing; the
+ *    replacing glide's completion activates its own target. Tap
+ *    starts the glide only; activation fires on landing. The
+ *    parent-change effect is guarded so our own activation echo
+ *    cannot restart a glide mid-drag.
+ * 5. HOLD_SCALE 1.25 -> 1.4: held 78.4dp expanded, 58.8dp shrunk.
+ * 6. GLIDE EASING is Easing.out(Easing.exp) now, 450ms — ease-out
+ *    only, no in-out. The shader pivot is UNCHANGED: it was
+ *    already the exact middle (GlassView.kt: b = resolution *
+ *    0.5, magBase about b), so no shader change; the frame scale
+ *    IS the magnification (shader M stays 1.0).
+ *
  * PERFORMANCE. The glass costs one half-resolution STRIP capture
  * per frame (BUILD 11: the union of the glass rects + 16dp
  * margin, ~145dp tall instead of the ~800dp full root), shared
@@ -398,7 +441,7 @@
  * plain ScrollView.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, StyleSheet, Text, useWindowDimensions, View, type ViewStyle } from 'react-native';
 import Animated, {
   Easing,
@@ -439,19 +482,18 @@ const OUTSET = 24;
  *  height = bar height minus 2x4dp, corner radius =
  *  min(tabWidth, itemHeight)/2. NOT a 48dp circle. */
 const DROPLET_INSET = 4;
-/** BUILD 13 — HOLD SCALE. On hold the droplet frame grows by a
- *  UNIFORM SCALE TRANSFORM about its centre, s = 1.25 (frame
- *  geometry never changes — build 12 grew only the frame HEIGHT
- *  to 1.20x the bar height, which changed the aspect ratio -27%
- *  expanded / -30% shrunk). Size rule, solved against the REST
- *  droplet height: expanded rest 56dp needs 56s > 64 (s > 1.143);
- *  shrunk rest 42dp needs 50 < 42s <= 64 (s in (1.190, 1.524]);
- *  intersection s in (1.19, 1.52]. 1.25 gives held 70.0dp expanded
- *  (bigger than the full bar) and 52.5dp shrunk (bigger than the
- *  shrunk bar, below the full bar). NOT 1.20: shrunk 50.4dp is
- *  only 0.4dp above the shrunk bar, inside dp-to-px rounding
- *  noise. The width scales too (slot x s), so on end tabs the held
- *  droplet protrudes ~7dp past the bar's end caps horizontally —
+/** BUILD 13 — HOLD SCALE, BUILD 15: 1.4. On hold the droplet
+ *  frame grows by a UNIFORM SCALE TRANSFORM about its centre,
+ *  s = 1.4 (frame geometry never changes — build 12 grew only
+ *  the frame HEIGHT to 1.20x the bar height, which changed the
+ *  aspect ratio -27% expanded / -30% shrunk). Size rule, solved
+ *  against the REST droplet height: expanded rest 56dp needs
+ *  56s > 64 (s > 1.143); shrunk rest 42dp needs 50 < 42s <= 64
+ *  (s in (1.190, 1.524]); 1.4 gives held 78.4dp expanded (bigger
+ *  than the full bar, +14.4dp) and 58.8dp shrunk (bigger than the
+ *  shrunk bar, 5.2dp below the full bar). The width scales too
+ *  (slot ~92.5dp -> ~129.5dp), so on end tabs the held droplet
+ *  protrudes ~9-10dp past the bar's end caps horizontally —
  *  allowed (the held droplet is unclipped and over the bar by
  *  spec). The frame NEVER floats: its centroid stays on the bar's
  *  centreline at every lift value, because the scale is about the
@@ -459,23 +501,39 @@ const DROPLET_INSET = 4;
  *  of the frame, so they scale along; the shader's resolution
  *  uniform stays rest-size. The hold magnification is optical no
  *  more: the shader's M is 1.0 now (see settings) and this frame
- *  scale IS the magnification. */
-const HOLD_SCALE = 1.25;
-/** BUILD 13 — GROUP SHIFT, BUILD 14 settled-driven. The
- *  icon+label group's span midpoint sits 7.5dp below the bar
- *  centreline at full labels (icon top -13dp, label text bottom
- *  +28dp), so a uniform zoom about the centre pushes the label
- *  out of the held droplet. The LANDED tab's icon+label group
- *  translates UP by this much, scaled by labelFraction and lift
- *  and the tab's shift amount (1 while landed, 0 otherwise,
- *  eased over 200ms after landing) — at rest (lift 0) the bar
- *  layout is exactly as before; on hold the group is centred on
- *  the droplet centreline, so the held content is centred and
- *  inside with symmetric margins. The shift is invisible in the
- *  live bar: the settled tab is covered by the droplet at every
- *  lift value (the shifted span, -20.5..+20.5dp, stays inside the
- *  droplet's current half-height, 28..35dp). */
-const GROUP_SHIFT_DP = 7.5;
+ *  scale IS the magnification. NATIVE STRIP: the strip is the
+ *  union of the glass rects + 16dp margin; the held visual
+ *  extends (1.4-1)/2 x height = 11.2dp beyond the layout rect,
+ *  still inside the 16dp margin, so no strip change was needed —
+ *  the margin is now the binding constraint (verify on device). */
+const HOLD_SCALE = 1.4;
+/** BUILD 15 — GROUP CENTRING, 7.5dp (was GROUP_SHIFT_DP, the
+ *  build 13/14 "selection raise"). The magnitude is unchanged
+ *  but the MEANING is: the icon+label group's span midpoint sits
+ *  7.5dp below the bar centreline at full labels (icon top -13dp,
+ *  label text bottom +28dp), so a uniform zoom about the centre
+ *  pushes the label out of the held droplet. The tab the droplet
+ *  is currently COVERING (hoveredIndex — the tab under the
+ *  droplet centre, not selectedIndex alone) has its icon+label
+ *  group translated UP by this much, scaled by labelFraction and
+ *  lift and the tab's hover amount (1 while covered, 0 otherwise,
+ *  eased over 200ms) — at rest (lift 0) the bar layout is exactly
+ *  as before; on hold the group is centred on the droplet
+ *  centreline, so the held content is centred and inside with
+ *  symmetric margins. At 1.4x the held half-heights are 39.2dp
+ *  (expanded) and 29.4dp (shrunk); the centred span is ±20.5dp,
+ *  leaving symmetric margins ~18.7dp / 8.9dp — it fits. This is
+ *  geometric centring, NOT a selection effect: there is no
+ *  "raised active icon" anymore, the active state is the
+ *  activated colour only. */
+const GROUP_CENTER_DP = 7.5;
+/** BUILD 15 — HOVER ACTIVATION THRESHOLD. While the finger is
+ *  down, a tab activates when the droplet centre comes within
+ *  this distance (in tab units) of the tab centre — 0.28 of the
+ *  ~92.5dp slot, i.e. ~26dp — NOT at round()'s 0.5 midpoint
+ *  (~46dp). A tap or snap glide activates only on landing (see
+ *  startGlide), never by this threshold. */
+const HOVER_THRESHOLD = 0.28;
 /** How far the droplet lifts above the bar while held, in dp.
  *  BUILD 10: 0 — REMOVED. Build 9's droplet floated up on hold
  *  and Haziq wants the hold ENLARGE redone instead: on hold the
@@ -708,9 +766,9 @@ function DropletEdgeLight({
  *   Consequence to know about: on end tabs the droplet centre
  *   shifts ~2dp off the tab centre (frame left 4 vs 0). The icon
  *   stays centred on the tab; the shader magnification centre is
- *   the frame centre. At 1.25x frame scale that 2dp offset shifts
- *   the magnified icon by ~0.5dp — negligible, the prescribed cost
- *   of concentricity.
+ *   the frame centre. At 1.4x frame scale (BUILD 15) that 2dp
+ *   offset shifts the magnified icon by ~0.8dp — negligible, the
+ *   prescribed cost of concentricity.
  */
 function dropletRectFor(
   barW: number,
@@ -729,39 +787,35 @@ function dropletRectFor(
 }
 
 /**
- * BUILD 14 — one tab's icon + label, ON THE ICON ROW, below the
- * droplet (or above it — see the dual row in LiquidNavbar). There
- * is NO re-rendered icon above the droplet glass anymore
- * (LensTabIcon is deleted): the icons stay below the droplet and
- * are seen only through the glass, via the bar-included
- * second-strip capture, which the droplet samples at rest as well
- * as on hold. The icon does NOT scale (the frame scale IS the hold
- * magnification — scaling the icon as well would double-magnify
- * it in the capture), and the label does NOT scale either.
+ * BUILD 15 — one tab's icon + label, ON THE SINGLE ICON ROW.
+ * There is NO re-rendered icon above the droplet glass (LensTabIcon
+ * is deleted) and NO second copy of the row anymore (build 14's
+ * dual row is deleted): the icons stay in one row and are seen
+ * either crisp above the droplet (at rest — the droplet sits
+ * BELOW the row) or only through the glass (on hold — the droplet
+ * sits ABOVE the row). The icon does NOT scale (the frame scale
+ * IS the hold magnification — scaling the icon as well would
+ * double-magnify it in the capture), and the label does NOT scale
+ * either.
  *
- * THE GROUP SHIFT (GROUP_SHIFT_DP, 7.5dp), BUILD 14: the
+ * THE GROUP CENTRING (GROUP_CENTER_DP, 7.5dp), BUILD 15: the
  * icon+label group's span midpoint sits 7.5dp below the bar
  * centreline at full labels, so a uniform zoom about the centre
- * would push the label out of the held droplet. The LANDED tab's
- * icon and label translate UP together by 7.5dp x labelFraction x
- * lift x shiftAmt. Build 13 graded the shift by live coverage
- * (max(0, 1 - |index - dropletPos|)), so during a held slide the
- * outgoing tab's group slid down 7.5dp and the incoming tab's slid
- * up 7.5dp continuously through the 450ms glide, visible through
- * the enlarged droplet — the slide-up Haziq asked to remove. The
- * shift now follows the LANDED tab only (landedIndex, set in the
- * glide's completion callback when the droplet lands): during the
- * glide no tab moves vertically, and the incoming tab's group
- * takes its shifted position when the droplet lands, eased over
- * 200ms so the landing is not a hard jump. At rest (lift 0) the
- * shift is exactly 0 and the bar layout is unchanged. Trade-off:
- * mid-glide the passing droplet shows the incoming tab's group
- * unshifted (up to 7.5dp low).
+ * would push the label out of the held droplet. The tab the
+ * droplet is currently COVERING (hoveredIndex — the tab under
+ * the droplet centre) has its icon and label translated UP
+ * together by 7.5dp x labelFraction x lift x hoverAmt. Build 14
+ * graded the shift by the LANDED tab only, which left the
+ * passing droplet showing the incoming tab's group unshifted
+ * (up to 7.5dp low) mid-glide; the shift now follows the droplet
+ * itself, so the content under the droplet is centred wherever
+ * the droplet is, including mid-glide. At rest (lift 0) the
+ * shift is exactly 0 and the bar layout is unchanged.
  */
 function TabContent({
   tab,
   index,
-  landedIndex,
+  hoveredIndex,
   lift,
   labelFraction,
   color,
@@ -769,36 +823,36 @@ function TabContent({
 }: {
   tab: LiquidTabItem;
   index: number;
-  landedIndex: SharedValue<number>;
+  hoveredIndex: SharedValue<number>;
   lift: SharedValue<number>;
   labelFraction: SharedValue<number>;
   color: string;
   weight: 'fill' | 'regular';
 }): React.JSX.Element {
   const Icon = tab.icon;
-  // BUILD 14: per-tab shift amount, eased toward 1 while this tab
-  // is the landed one, 0 otherwise, over 200ms. The reaction
-  // fires only when landedIndex changes (the droplet lands),
-  // never while the droplet glides.
-  const shiftAmt = useSharedValue(index === landedIndex.value ? 1 : 0);
+  // BUILD 15: per-tab hover amount, eased toward 1 while this tab
+  // is the one under the droplet centre, 0 otherwise, over 200ms.
+  // The reaction fires only when hoveredIndex changes (the droplet
+  // centre crosses a slot boundary), never continuously.
+  const hoverAmt = useSharedValue(index === hoveredIndex.value ? 1 : 0);
   useAnimatedReaction(
-    () => (index === landedIndex.value ? 1 : 0),
+    () => (index === hoveredIndex.value ? 1 : 0),
     (target, prev) => {
       if (prev !== null && target !== prev) {
-        shiftAmt.value = withTiming(target, {
+        hoverAmt.value = withTiming(target, {
           duration: 200,
           easing: Easing.out(Easing.cubic),
         });
       }
     },
-    [landedIndex],
+    [hoveredIndex],
   );
   const shiftStyle = useAnimatedStyle(() => {
     return {
       transform: [
         {
           translateY:
-            -GROUP_SHIFT_DP * labelFraction.value * lift.value * shiftAmt.value,
+            -GROUP_CENTER_DP * labelFraction.value * lift.value * hoverAmt.value,
         },
       ],
     };
@@ -810,7 +864,7 @@ function TabContent({
       transform: [
         {
           translateY:
-            -GROUP_SHIFT_DP * labelFraction.value * lift.value * shiftAmt.value,
+            -GROUP_CENTER_DP * labelFraction.value * lift.value * hoverAmt.value,
         },
       ],
     };
@@ -828,19 +882,21 @@ function TabContent({
 }
 
 /**
- * BUILD 14 — one full icon row (all tabs), rendered TWICE by
- * LiquidNavbar: one copy below the droplet (opacity = lift) and
- * one above it (opacity = 1 - lift). At rest the above copy is
- * crisp above the droplet (the droplet's rest blur and veil never
- * touch the icons); on hold the above copy fades out and the below
- * copy is seen only through the glass. Both copies share the same
- * settled-driven group shift, so the capture (which draws both,
- * one at opacity 0) always shows each tab's icons exactly once.
+ * BUILD 15 — one full icon row (all tabs), rendered ONCE by
+ * LiquidNavbar. Build 14 rendered it twice (below copy opacity
+ * lift / above copy opacity 1 - lift) so the icons could be crisp
+ * at rest and seen through the glass on hold without any z-order
+ * change. That duplication is deleted: the active state is the
+ * activated colour only, and the DROPLET's z-order swaps instead
+ * (below the row at rest, above it on hold). One copy means the
+ * bar-strip capture (SharedBackdrop.captureBarStripSynthetic,
+ * which draws navbarRoot) always shows each tab's icons exactly
+ * once — there is no two-copies-sum-to-one invariant anymore.
  */
 function IconRow({
   tabs,
   selectedIndex,
-  landedIndex,
+  hoveredIndex,
   lift,
   labelFraction,
   iconActive,
@@ -848,7 +904,7 @@ function IconRow({
 }: {
   tabs: LiquidTabItem[];
   selectedIndex: number;
-  landedIndex: SharedValue<number>;
+  hoveredIndex: SharedValue<number>;
   lift: SharedValue<number>;
   labelFraction: SharedValue<number>;
   iconActive: string;
@@ -863,7 +919,7 @@ function IconRow({
             <TabContent
               tab={tab}
               index={index}
-              landedIndex={landedIndex}
+              hoveredIndex={hoveredIndex}
               lift={lift}
               labelFraction={labelFraction}
               color={active ? iconActive : iconInactive}
@@ -906,17 +962,81 @@ export function LiquidNavbar({
   // its tab automatically — the slot width is derived from the live bar
   // width below.
   const dropletPos = useSharedValue(selectedIndex);
-  // BUILD 14 — LANDED TAB. The tab the droplet has actually
-  // landed on: set ONLY in the glide's completion callback (see
-  // selectTab), never at gesture end — the glide STARTS at gesture
-  // end, so setting it there would still move the groups during
-  // the first 200ms of the glide. The icon+label group shift
-  // follows THIS, not the live gliding dropletPos, so no tab moves
-  // vertically during a held slide.
-  const landedIndex = useSharedValue(selectedIndex);
+  // BUILD 15 — HOVERED TAB. The tab under the droplet centre:
+  // clamp(round(dropletPos)), updated by the UI-thread reaction
+  // below on every dropletPos change. It drives TWO things: the
+  // per-tab group-centring amount (TabContent, via hoverAmt) and,
+  // while the finger is down, hover activation. It REPLACES
+  // build 14's landedIndex: the centring follows the droplet
+  // itself now, not the tab the last glide landed on — so the
+  // content under the droplet is centred wherever the droplet
+  // is, including mid-glide (build 14's trade-off was the
+  // incoming tab's group sitting up to 7.5dp low mid-glide).
+  const hoveredIndex = useSharedValue(selectedIndex);
+  // BUILD 15 — LAST ACTIVATED TAB (UI thread). The index we last
+  // told the parent about via runOnJS(onSelect). The duplicate
+  // guard for every activation path reads THIS, never the
+  // selectedIndex prop (which is a render-time snapshot and can
+  // lag the UI thread mid-gesture).
+  const activatedSv = useSharedValue(selectedIndex);
+  // BUILD 15 — FINGER DOWN. True from pan.onBegin until the
+  // gesture ends (onEnd / onFinalize) or the Tap owns the release
+  // (tap.onEnd). Hover activation only fires while this is true:
+  // a tap glide must NOT activate the intermediate tabs the
+  // droplet passes over — tap activation happens only on landing
+  // (startGlide's completion callback).
+  const draggingSv = useSharedValue(false);
   // 0 = resting over the active tab, 1 = held (magnified in place).
   // Owned by the DemoScreen (a prop), so the debug readout can
   // print the hold progress — build 8 ground truth for the hold.
+
+  // BUILD 15 — JS-side mirror of activatedSv. A shared value
+  // written on the UI thread is not guaranteed visible to the JS
+  // thread by the time the parent's setState re-renders us, so
+  // the parent-change effect below must NOT read activatedSv:
+  // it reads this ref instead, updated synchronously in
+  // handleSelect (the JS function every runOnJS activation goes
+  // through) before onSelect is called. Without it, the echo of
+  // our own mid-drag hover activation could look like an
+  // external selection change and restart the droplet into a
+  // fresh glide out from under the finger.
+  const lastActivatedRef = useRef(selectedIndex);
+  const handleSelect = useCallback(
+    (index: number) => {
+      lastActivatedRef.current = index;
+      onSelect(index);
+    },
+    [onSelect],
+  );
+
+  // BUILD 15 — HOVER DERIVATION (UI thread). One reaction on
+  // dropletPos + dragging:
+  //   (a) hoveredIndex follows the tab under the droplet centre
+  //       (round, clamped) at all times — drag, glide, rest. The
+  //       per-tab centring amount eases toward it over 200ms.
+  //   (b) while the finger is down, a tab ACTIVATES when the
+  //       droplet centre comes within HOVER_THRESHOLD (0.28) of
+  //       its centre — not at round()'s 0.5 midpoint. Only when
+  //       the candidate changes AND differs from the last
+  //       activated tab does runOnJS fire, so a held finger
+  //       sitting on the active tab calls onSelect zero times.
+  useAnimatedReaction(
+    () => ({ pos: dropletPos.value, dragging: draggingSv.value }),
+    (v) => {
+      'worklet';
+      const nearest = Math.max(0, Math.min(tabs.length - 1, Math.round(v.pos)));
+      if (hoveredIndex.value !== nearest) hoveredIndex.value = nearest;
+      if (
+        v.dragging &&
+        Math.abs(v.pos - nearest) <= HOVER_THRESHOLD &&
+        nearest !== activatedSv.value
+      ) {
+        activatedSv.value = nearest;
+        runOnJS(handleSelect)(nearest);
+      }
+    },
+    [dropletPos, draggingSv, hoveredIndex, activatedSv, tabs.length, handleSelect],
+  );
 
   // BUILD 9: the droplet's hold state, as React state. The lift
   // SharedValue drives the hold magnification on the UI thread;
@@ -956,19 +1076,29 @@ export function LiquidNavbar({
     return fullHeight - (fullHeight - shrunkHeight) * (1 - labelFraction.value);
   });
 
-  // Snap the droplet to a tab with exponential in-out easing
-  // (BUILD 10: was a withSpring — elastic, jelly. Haziq wants
-  // exponential in-out, no elastic, no jelly, no rubber banding).
-  // withTiming + Easing.inOut(Easing.exp), BUILD 12: 450ms (was
-  // 300ms — Haziq said the exponential easing was a bit too fast
-  // on 13 Nov; same curve, slower). The droplet eases out of the
-  // old tab, cruises, and eases into the new one, with no
+  // Snap the droplet to a tab with ease-out exponential easing
+  // (BUILD 15: Easing.out(Easing.exp), 450ms — was in-out. Haziq
+  // wants ease-out only: the droplet reaches the target fast with
+  // a long tail, no slow start. Duration stays 450ms. No
   // overshoot past the target — a spring always overshoots and
-  // settles back, which is the jelly feel. Worklet: called
+  // settles back, which is the jelly feel.)
+  //
+  // BUILD 15 — SPLIT GLIDE / ACTIVATION. startGlide ONLY moves
+  // the droplet: it never calls onSelect. Activation happens in
+  // the withTiming completion callback, and ONLY if (finished) —
+  // an interrupted glide activates nothing; the replacing glide's
+  // own completion activates its target. Build 14 called
+  // runOnJS(onSelect) in the same call that started the glide, so
+  // the icon activated at gesture end, ~450ms before the droplet
+  // arrived. Now the icon activates only AFTER the droplet is on
+  // the tab — for tap, for the drag snap, and for the cancel
+  // restore alike. The duplicate guard (clamped !==
+  // activatedSv.value) keeps a hover activation that already fired
+  // mid-drag from calling onSelect twice. Worklet: called
   // worklet-to-worklet from gestures, and from JS only via
   // runOnUI. The selection callback reaches JS only via runOnJS —
   // never a synchronous worklet call from the JS thread.
-  const selectTab = useCallback(
+  const startGlide = useCallback(
     (index: number) => {
       'worklet';
       const clamped = Math.max(0, Math.min(tabs.length - 1, Math.round(index)));
@@ -976,29 +1106,38 @@ export function LiquidNavbar({
         clamped,
         {
           duration: 450,
-          easing: Easing.inOut(Easing.exp),
+          easing: Easing.out(Easing.exp),
         },
         (finished) => {
           'worklet';
-          // BUILD 14: the landed tab changes ONLY when the glide
+          // BUILD 15: the tab activates ONLY when the glide
           // COMPLETES (finished = the animation ran to its target,
           // not interrupted by a new gesture). Setting it here —
-          // not in selectTab at gesture end — is what keeps every
-          // tab vertically still during the glide: the shift
-          // follows landedIndex, and landedIndex cannot change
-          // mid-glide.
-          if (finished) landedIndex.value = clamped;
+          // not in startGlide at gesture end — is what keeps the
+          // icon inactive while the droplet is still travelling.
+          if (finished && clamped !== activatedSv.value) {
+            activatedSv.value = clamped;
+            runOnJS(handleSelect)(clamped);
+          }
         },
       );
-      runOnJS(onSelect)(clamped);
     },
-    [tabs.length, dropletPos, landedIndex, onSelect],
+    [tabs.length, dropletPos, activatedSv, handleSelect],
   );
 
   // Keep the droplet in step if the parent changes the selection.
+  // BUILD 15: guarded — only an EXTERNAL selection change glides
+  // the droplet. Our own activations set lastActivatedRef before
+  // calling onSelect, so the echo of our own onSelect is skipped
+  // here; without the guard a mid-drag hover activation would
+  // restart the droplet into a fresh glide out from under the
+  // finger, and a tap's landing activation would restart its own
+  // just-finished glide.
   useEffect(() => {
-    runOnUI(selectTab)(selectedIndex);
-  }, [selectedIndex, selectTab]);
+    if (selectedIndex !== lastActivatedRef.current) {
+      runOnUI(startGlide)(selectedIndex);
+    }
+  }, [selectedIndex, startGlide]);
 
   // BUILD 13 — PAN + TAP, NO GESTURE ARBITRATION BEYOND THAT.
   // Build 12's single-Pan model is DELETED as the tap path: its
@@ -1104,6 +1243,13 @@ export function LiquidNavbar({
       movedDistance.value = 0;
       gestureEnded.value = false;
       panOwned.value = false;
+      // BUILD 15: the finger is down — hover activation is armed
+      // (the reaction above fires only while this is true). Set
+      // here, in onBegin, so a held drag activates tabs as the
+      // droplet crosses them; cleared in onEnd / onFinalize /
+      // tap.onEnd BEFORE any glide starts, so a tap glide never
+      // activates the intermediate tabs it passes over.
+      draggingSv.value = true;
       // Arm the hold gate: lift stays 0 for 150ms, then ramps to
       // 1 over 180ms. Assigning lift -> 0 on release cancels a
       // still-pending delayed ramp, so a quick tap never lifts.
@@ -1136,6 +1282,11 @@ export function LiquidNavbar({
     .onEnd(() => {
       'worklet';
       gestureEnded.value = true;
+      // BUILD 15: finger up FIRST — hover activation stops here,
+      // before the snap glide starts, so the glide's own
+      // completion (not the hover reaction) is what activates the
+      // snapped-to tab, and only once it lands.
+      draggingSv.value = false;
       lift.value = withTiming(0, { duration: 220, easing: Easing.out(Easing.cubic) });
       if (movedDistance.value < 4) {
         // Fallback only: onEnd runs only if the Pan was ACTIVE,
@@ -1145,21 +1296,24 @@ export function LiquidNavbar({
         // in the geometry at down time (the slot captured at drag
         // start).
         const index = Math.floor(downX.value / dragStartSlot.value);
-        selectTab(Math.max(0, Math.min(tabs.length - 1, index)));
+        startGlide(Math.max(0, Math.min(tabs.length - 1, index)));
       } else {
-        // Drag: snap to the nearest tab.
-        selectTab(Math.round(dropletPos.value));
+        // Drag: snap to the nearest tab. Activation fires only
+        // when the snap glide lands (startGlide's completion) —
+        // unless the hover reaction already activated it mid-drag.
+        startGlide(Math.round(dropletPos.value));
       }
     })
     .onFinalize(() => {
       'worklet';
-      // BUILD 14: the lift reset comes FIRST, before the panOwned
-      // guard. Build 13 reset lift only AFTER the guard, so on a
-      // tap (the Pan never owned the pointer, panOwned false) the
-      // reset never ran: the 150ms ramp armed in onBegin fired at
-      // t=150ms and lift stayed at 1 forever, enlarging the
-      // droplet permanently. The guard below must protect ONLY
-      // the selectTab restore, never the lift reset.
+      // BUILD 15: finger gone FIRST — same reason as onEnd. The
+      // lift reset comes next, before the panOwned guard (build
+      // 14 fix: on a tap the Pan never owned the pointer, so a
+      // reset after the guard never ran and the 150ms ramp fired
+      // at t=150ms and lift stayed at 1 forever). The guard below
+      // must protect ONLY the startGlide restore, never the lift
+      // reset or the dragging clear.
+      draggingSv.value = false;
       lift.value = withTiming(0, { duration: 220, easing: Easing.out(Easing.cubic) });
       // onFinalize also runs after a completed onEnd, and after a
       // FAILED Pan — including every tap the Tap gesture wins.
@@ -1168,8 +1322,15 @@ export function LiquidNavbar({
       // the pointer.
       if (gestureEnded.value || !panOwned.value) return;
       // Cancelled mid-drag: the droplet glides back to the
-      // selected tab instead of stranding mid-way.
-      selectTab(selectedIndex);
+      // selected tab instead of stranding mid-way. BUILD 15: the
+      // restore target is activatedSv — the last tab WE activated
+      // (UI-thread fresh; the selectedIndex prop is a render-time
+      // snapshot and can lag a mid-drag hover activation). If the
+      // droplet hovered a new tab mid-drag, that tab IS the
+      // selection now, so the restore returns to it; if it never
+      // left the threshold, the tab never deactivated and the
+      // landing guard skips the duplicate onSelect.
+      startGlide(activatedSv.value);
     });
 
   // BUILD 13: the dedicated Tap gesture (build 11's tap, restored).
@@ -1180,6 +1341,12 @@ export function LiquidNavbar({
   // move event, so no minDistance value can activate it.
   const tap = Gesture.Tap().onEnd((event) => {
     'worklet';
+    // BUILD 15: finger up FIRST — the tap glide must not trip
+    // the hover reaction (dragging false before startGlide), so
+    // the tapped tab activates only when the glide LANDS, ~450ms
+    // later, not at pointer-up and not via any intermediate tab
+    // the droplet passes over.
+    draggingSv.value = false;
     // BUILD 14: reset lift here too. A motionless tap never
     // activates the Pan, so the Pan's onEnd never fires for it —
     // and the 150ms ramp armed in pan.onBegin would otherwise
@@ -1189,7 +1356,7 @@ export function LiquidNavbar({
     // owns the release, so it resets lift itself as well.
     lift.value = withTiming(0, { duration: 220, easing: Easing.out(Easing.cubic) });
     const slot = barWidth.value / tabs.length;
-    selectTab(Math.floor(event.x / slot));
+    startGlide(Math.floor(event.x / slot));
   });
 
   // Exclusive: the Pan wins on movement (the Tap fails), the Tap
@@ -1256,10 +1423,10 @@ export function LiquidNavbar({
     // centre (RN transforms originate at the view centre), NOT a
     // height lerp — build 12's height-only growth changed the
     // aspect ratio -27%/-30%. The layout (width/height/top/left)
-    // never changes; only this transform grows, 1 -> 1.25 with
-    // lift. The glass wrapper and edge light are children of the
-    // frame, so they scale along; the shader's resolution uniform
-    // stays rest-size.
+    // never changes; only this transform grows, 1 -> 1.4 with
+    // lift (BUILD 15). The glass wrapper and edge light are children
+    // of the frame, so they scale along; the shader's resolution
+    // uniform stays rest-size.
     const scale = 1 + (HOLD_SCALE - 1) * lift.value;
     return {
       width: rect.width,
@@ -1300,21 +1467,24 @@ export function LiquidNavbar({
   const dropletVeilStyle = useAnimatedStyle(() => ({
     opacity: settings.legibilityVeil * (1 - lift.value),
   }));
-  // BUILD 14 — HOLD-DEPENDENT LAYERING. The icon row is rendered
-  // twice: the BELOW copy (under the droplet) fades IN with lift,
-  // the ABOVE copy (over the droplet) fades OUT with lift. At rest
-  // the icons are crisp above the droplet; on hold they are seen
-  // only through the glass. No z-order churn mid-gesture — both
-  // copies stay mounted at fixed zIndex, only their opacities
-  // animate. In the bar-strip capture the two copies always sum
-  // to exactly one set of icons (one of them is at opacity 0 at
-  // either end of the ramp).
-  const belowRowStyle = useAnimatedStyle(() => ({
-    opacity: lift.value,
-  }));
-  const aboveRowStyle = useAnimatedStyle(() => ({
-    opacity: 1 - lift.value,
-  }));
+  // BUILD 15 — HOLD-DEPENDENT Z-ORDER, NOT A DUAL ROW. Build 14
+  // rendered the icon row twice (below copy opacity lift, above
+  // copy opacity 1 - lift). That duplication is DELETED: one
+  // IconRow is rendered once (zIndex 3, below), and the droplet
+  // overlay swaps z-order with it — zIndex 2 at rest (below the
+  // row: icons crisp above the droplet, never blurred or veiled
+  // by it) and zIndex 4 on hold (above the row: icons seen only
+  // through the glass). The swap is driven by the `held` React
+  // state (mirrors lift > 0) as a plain zIndex change: the
+  // droplet is never unmounted, and there is NO opacity animation
+  // left on the icon row to mask a mid-ramp pop. KNOWN
+  // TRANSITION: at the first frames of the hold ramp the droplet
+  // is already above the icons while its blur/veil are still
+  // easing out (native heldAnim, ~200ms), so the icons pass
+  // briefly through the blurred glass before it clears — that is
+  // the honest cost of a plain z-order swap, and it is what the
+  // spec asks for. In the bar-strip capture the single row always
+  // shows each tab's icons exactly once.
 
   const dark = settings.mode === 'dark';
   const tintColor: [number, number, number] = dark
@@ -1384,45 +1554,52 @@ export function LiquidNavbar({
               />
               <EdgeLight intensity={settings.edgeLight} aspect={barAspect} />
             </Animated.View>
-            {/* THE DROPLET, BUILD 14 (rebuilt from scratch): the icon
-                row is rendered TWICE now (see below) — one copy
-                BELOW the droplet (opacity = lift, zIndex 2) and
-                one ABOVE it (opacity = 1 - lift, zIndex 4). At rest
-                the icons sit above the droplet, crisp, never
-                blurred or veiled by it; on hold the above copy
-                fades out and the icons are seen only through the
-                glass, via the bar-included capture the droplet
-                glass always samples. The droplet itself is over the
-                navbar AND (while held) over the icons. The frame is
-                the bar rect inset 4dp on all sides intersected with
-                the tab slot (Anivio's shape, shape only), holding
-                the same glass as the bar. NOTHING is re-rendered
-                above the glass inside the frame anymore
-                (LensTabIcon is deleted). The edge light is the
-                TOPMOST element of the droplet. On hold the droplet
-                does NOT lift: the frame grows by a UNIFORM SCALE
-                (HOLD_SCALE 1.25) about its centre (its layout
-                never changes), its blur eases to 0 and its veil
-                fades to 0, so it is a clear magnifying lens over
-                the navbar, and its bend runs at 0.12x so the icons
-                stay clean. It never intercepts touches. */}
-            {/* BELOW copy of the icon row (opacity = lift): the
-                icons the droplet samples through the glass while
-                held. At rest lift = 0, so this copy is invisible
-                and the capture shows the icons exactly once (from
-                the above copy). */}
-            <Animated.View style={[styles.iconRow, { zIndex: 2 }, belowRowStyle]}>
+            {/* THE DROPLET, BUILD 15 (rebuilt from scratch): the icon
+                row is rendered ONCE now (zIndex 3, below) — build
+                14's dual row is deleted. The DROPLET swaps z-order
+                with it instead: at rest the droplet overlay is
+                zIndex 2, BELOW the icon row, so the icons sit above
+                the droplet, crisp, never blurred or veiled by it;
+                on hold it is zIndex 4, ABOVE the row, so the icons
+                are seen only through the glass, via the bar-included
+                capture the droplet glass always samples. The swap
+                is a plain zIndex change driven by `held` — no
+                crossfade, no opacity animation on the icon row.
+                The droplet itself is over the navbar AND (while
+                held) over the icons. The frame is the bar rect
+                inset 4dp on all sides intersected with the tab slot
+                (Anivio's shape, shape only), holding the same glass
+                as the bar. NOTHING is re-rendered above the glass
+                inside the frame anymore (LensTabIcon is deleted).
+                The edge light is the TOPMOST element of the
+                droplet. On hold the droplet does NOT lift: the
+                frame grows by a UNIFORM SCALE (HOLD_SCALE 1.4)
+                about its centre (its layout never changes), its
+                blur eases to 0 and its veil fades to 0, so it is a
+                clear magnifying lens over the navbar, and its bend
+                runs at 0.12x so the icons stay clean. It never
+                intercepts touches. */}
+            {/* THE SINGLE icon row (zIndex 3): the icons as the user
+                sees them at rest — crisp, above the droplet, never
+                blurred or veiled by it. On hold the droplet swaps
+                above it and the icons are seen only through the
+                glass. pointerEvents none, so it never intercepts
+                the gestures the bar owns. */}
+            <Animated.View style={[styles.iconRow, { zIndex: 3 }]} pointerEvents="none">
               <IconRow
                 tabs={tabs}
                 selectedIndex={selectedIndex}
-                landedIndex={landedIndex}
+                hoveredIndex={hoveredIndex}
                 lift={lift}
                 labelFraction={labelFraction}
                 iconActive={iconActive}
                 iconInactive={iconInactive}
               />
             </Animated.View>
-            <Animated.View style={[styles.dropletOverlay, { zIndex: 3 }]} pointerEvents="none">
+            <Animated.View
+              style={[styles.dropletOverlay, { zIndex: held ? 4 : 2 }]}
+              pointerEvents="none"
+            >
               <Animated.View style={[styles.dropletFrame, dropletFrameStyle]}>
                 {HAS_REFRACTION ? (
                   <Animated.View style={[styles.dropletGlass, dropletGlassWrapStyle]}>
@@ -1444,10 +1621,10 @@ export function LiquidNavbar({
                     is hidden during that capture — so at rest this
                     veil is the droplet's only veil, and on hold
                     there is no veil inside the droplet at all.
-                    BUILD 14: at rest this veil only ever darkens
-                    the BELOW icon copy (opacity 0) and the glass
-                    behind it — the visible icons are the ABOVE
-                    copy, untouched by it. */}
+                    BUILD 15: at rest this veil only ever darkens
+                    the glass behind the icons — the visible icons
+                    are the single row ABOVE the droplet,
+                    untouched by it. */}
                 <Animated.View
                   style={[
                     StyleSheet.absoluteFill,
@@ -1457,26 +1634,6 @@ export function LiquidNavbar({
                 />
                 <DropletEdgeLight aspectSv={dropletAspectSv} intensity={settings.edgeLight} />
               </Animated.View>
-            </Animated.View>
-            {/* ABOVE copy of the icon row (opacity = 1 - lift,
-                zIndex 4): the icons as the user sees them at rest
-                — crisp, above the droplet, never blurred or veiled
-                by it. On hold it fades out, so the icons are seen
-                only through the glass. pointerEvents none, so it
-                never intercepts the gestures the bar owns. */}
-            <Animated.View
-              style={[styles.iconRow, { zIndex: 4 }, aboveRowStyle]}
-              pointerEvents="none"
-            >
-              <IconRow
-                tabs={tabs}
-                selectedIndex={selectedIndex}
-                landedIndex={landedIndex}
-                lift={lift}
-                labelFraction={labelFraction}
-                iconActive={iconActive}
-                iconInactive={iconInactive}
-              />
             </Animated.View>
           </Animated.View>
         </GestureDetector>

@@ -41,6 +41,20 @@ jobs:
       - name: Expo prebuild (Android)
         run: npx expo prebuild --platform android --clean
 
+      # Same release keystore as the phone build (see
+      # android-apk.yml): the withReleaseSigning plugin FAILS a
+      # release build without it, and the x86 APK must carry the
+      # same key. This workflow NEVER publishes a GitHub Release.
+      - name: Restore release keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+          cat >> android/gradle.properties <<EOF
+          MYAPP_RELEASE_STORE_FILE=release.keystore
+          MYAPP_RELEASE_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MYAPP_RELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}
+          MYAPP_RELEASE_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
       - name: Build for x86_64 (emulator test only)
         run: printf '\nreactNativeArchitectures=x86_64\n' >> android/gradle.properties
 

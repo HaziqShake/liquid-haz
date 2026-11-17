@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider for the in-app update flow: the downloaded APK lives
+     in the app-private files dir (Expo FileSystem.documentDirectory),
+     and Android 7+ throws FileUriExposedException for a file:// URI,
+     so the installer intent must carry a content:// URI from here.
+     Authority is <package>.appupdater.fileprovider — deliberately
+     distinct from the generic .fileprovider authority so it can
+     never collide with another library's provider at manifest merge.
+     files-path "." covers getFilesDir(), which is where
+     documentDirectory points on Android. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <provider
+      android:name="androidx.core.content.FileProvider"
+      android:authorities="${applicationId}.appupdater.fileprovider"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/app_updater_file_paths" />
+    </provider>
+  </application>
+</manifest>

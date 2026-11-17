@@ -24,8 +24,26 @@ export interface DemoBackground {
  * bends. The set is chosen to judge the glass: sharp detail and strong
  * colour for refraction, a dark and a light scene so both navbar modes can
  * be tested, and high-frequency texture for the blur.
+ *
+ * BUILD 15 (17 Nov 2026): city-night is the DEFAULT (first in this
+ * array — DemoScreen defaults to BACKGROUNDS[0].id and the settings
+ * chips render from the same array, so reordering is the whole
+ * change). Bottom-band mean luminance where the bar sits: city-night
+ * 75, dark with vivid lights — the best single showcase for dark
+ * mode and the edge glow. mountain-lake (the old default, 133, mid
+ * warm) stays second. night-peaks (22, near-black) is the worst
+ * under the bar; architecture (135) is the best for judging
+ * refraction. No new image was added: city-night already fits.
  */
 export const BACKGROUNDS: DemoBackground[] = [
+  {
+    id: 'city-night',
+    label: 'City',
+    caption: 'Neon city at night. Dark scene with vivid coloured lights for the edge glow.',
+    kind: 'image',
+    source: require('../../assets/backgrounds/city-night.jpg'),
+    accent: '#A855F7',
+  },
   {
     id: 'mountain-lake',
     label: 'Lake',
@@ -89,14 +107,6 @@ export const BACKGROUNDS: DemoBackground[] = [
     kind: 'image',
     source: require('../../assets/backgrounds/beach.jpg'),
     accent: '#0EA5E9',
-  },
-  {
-    id: 'city-night',
-    label: 'City',
-    caption: 'Neon city at night. Dark scene with vivid coloured lights for the edge glow.',
-    kind: 'image',
-    source: require('../../assets/backgrounds/city-night.jpg'),
-    accent: '#A855F7',
   },
 ];
 

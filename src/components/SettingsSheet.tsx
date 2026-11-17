@@ -23,6 +23,17 @@ interface SettingsSheetProps {
   backgroundId: string;
   onBackgroundChange: (id: string) => void;
   onClose: () => void;
+  /** BUILD 15 — the installed build number (app.json
+   *  android.versionCode, read at runtime). Shown in the App
+   *  section so the build on the phone is always visible. */
+  localBuild: number | null;
+  /** True while a manual update check is in flight. */
+  updateChecking: boolean;
+  /** Set (to the local build number) when a manual check reports
+   *  up-to-date — the ONLY place that message ever appears. Null
+   *  otherwise (never shown after a silent launch check). */
+  updateUpToDateBuild: number | null;
+  onCheckForUpdates: () => void;
 }
 
 function Row({ label, value }: { label: string; value: string }): React.JSX.Element {
@@ -75,6 +86,10 @@ export function SettingsSheet({
   backgroundId,
   onBackgroundChange,
   onClose,
+  localBuild,
+  updateChecking,
+  updateUpToDateBuild,
+  onCheckForUpdates,
 }: SettingsSheetProps): React.JSX.Element {
   const set = (patch: Partial<NavbarSettings>): void => {
     onSettingsChange({ ...settings, ...patch });
@@ -194,6 +209,23 @@ export function SettingsSheet({
           );
         })}
       </View>
+
+      {/* BUILD 15 — IN-APP UPDATES. The installed build number
+          (app.json android.versionCode) and the manual check. The
+          launch check is silent and never reports here; only a
+          manual tap reports "You're on the latest build". A newer
+          build raises the update modal instead of a line here. */}
+      <Text style={styles.sectionLabel}>App</Text>
+      <Row label="Build" value={localBuild !== null ? `Build ${localBuild}` : 'unknown'} />
+      <Pressable style={styles.updateRow} onPress={onCheckForUpdates} disabled={updateChecking}>
+        <Text style={styles.rowLabel}>Check for updates</Text>
+        <Text style={styles.rowValue}>{updateChecking ? 'Checking…' : 'Check'}</Text>
+      </Pressable>
+      {updateUpToDateBuild !== null ? (
+        <Text style={styles.updateNote}>
+          You&apos;re on the latest build (Build {updateUpToDateBuild}).
+        </Text>
+      ) : null}
       </ScrollView>
     </View>
   );
@@ -258,6 +290,18 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginTop: 14,
     marginBottom: 8,
+  },
+  updateRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  updateNote: {
+    fontFamily: 'Inter-Regular',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.6)',
+    marginTop: 8,
   },
   chips: {
     flexDirection: 'row',

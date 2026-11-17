@@ -29,7 +29,8 @@ import { Books, Compass, Gear, House } from 'phosphor-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LiquidNavbar, type LiquidTabItem } from '../components/LiquidNavbar';
 import { SettingsSheet } from '../components/SettingsSheet';
-import { getGlassDebug } from 'liquid-glass-refraction';
+import { UpdateModal } from '../updates/UpdateModal';
+import { useAppUpdate } from '../updates/useAppUpdate';
 import { BACKGROUNDS, findBackground } from '../data/backgrounds';
 import { DEFAULT_SETTINGS, type NavbarSettings } from '../settings/settings';
 
@@ -49,7 +50,7 @@ const CARDS = [
   { title: 'Refraction', body: 'The background bends at the glass edge. Look at the rim, not the middle.' },
   { title: 'The Droplet', body: 'A clear lens over the active tab, the same glass as the bar. At rest it does not magnify at all. Hold it and it magnifies uniformly in place — no lift, and the blur stays.' },
   { title: 'Drag the Bar', body: 'Press and drag across the bar. The droplet follows your finger and snaps to the nearest tab.' },
-  { title: 'Tap a Tab', body: 'A tap picks the tab under your finger. The droplet glides there with exponential in-out easing.' },
+  { title: 'Tap a Tab', body: 'A tap picks the tab under your finger. The droplet glides there with ease-out exponential easing.' },
   { title: 'Scroll to Shrink', body: 'Scroll down and the labels collapse and the bar shrinks. Switching tabs never grows it back. Scroll up to bring them back.' },
   { title: 'Edge Light', body: 'The rim is brightest at the top-left and bottom-right corners and fades fast to nothing along the edges.' },
   { title: 'iOS 27 Default', body: 'Moderate tint. Not crystal clear, not heavily tinted. The photo stays visible through the glass.' },
@@ -64,43 +65,30 @@ export function DemoScreen(): React.JSX.Element {
   const [backgroundId, setBackgroundId] = useState(BACKGROUNDS[0].id);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
-  // BUILD 6 verification aid (remove before final delivery): the
-  // native glass state, printed top-left, refreshed once a second
-  // via the module's getGlassDebug async function. Format:
-  //   "cap 540x1200 | nav Y hid Y | drawn bar Y drop Y (bar)
-  //    hash 1a2b3c4d | rect 24,890,372,1012"
-  // cap = shared backdrop bitmap size; nav = a navbar root was
-  // found; hid = it was actually hidden during the last capture;
-  // drawn bar / drop = the RenderEffect path drew at least once,
-  // PER MODE (build 9). If this reads nav N hid N on device,
-  // findNavbarRoot failed and the capture still contains the
-  // navbar (build 4 behaviour).
-  const [debugText, setDebugText] = useState('glass: …');
-  // BUILD 8 verification aid: the hold progress, owned here so
-  // the 1s poll below can read it (the navbar only animates it).
-  // Printed as a third debug line, e.g. "lift 1.00" mid-hold.
-  // BUILD 10: `lift` is hold progress 0..1 (the droplet no longer
-  // lifts); it drives the hold magnification. BUILD 11: it also
-  // drives the hold FRAME growth (1.15x the current bar height).
-  // Remove before final delivery, with the rest of the readout.
-  const lift = useSharedValue(0);
+  // BUILD 15 — IN-APP UPDATES. The update state machine lives in
+  // useAppUpdate (src/updates/): silent check once per launch
+  // (shows the modal only when a newer build exists — nothing at
+  // all otherwise), plus the manual check from the settings sheet.
+  // The modal renders below, above the navbar.
+  const update = useAppUpdate();
   useEffect(() => {
-    let alive = true;
-    const tick = async (): Promise<void> => {
-      try {
-        const s = await getGlassDebug();
-        if (alive) setDebugText(`${s}\nlift ${lift.value.toFixed(2)}`);
-      } catch {
-        if (alive) setDebugText(`glass: unavailable\nlift ${lift.value.toFixed(2)}`);
-      }
-    };
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [lift]);
+    void update.checkSilent();
+    // Once per launch only; checkSilent is stable by ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // BUILD 15: the debug readout is GONE (removed 17 Nov 2026 —
+  // Haziq's build 15 list). What used to print on screen
+  // (getGlassDebug + lift) is deleted entirely from this file:
+  // the import, the debugText state, the 1-second poll effect,
+  // the overlay Text and the debugText style. The lift SharedValue
+  // STAYS — the navbar needs it as a prop (hold progress 0..1,
+  // drives the hold frame scale, blur/veil fades and group
+  // centring). Logcat output is KEPT: GlassDebugState.snapshot()
+  // and the Log.d/Log.w lines in GlassView.kt, plus the
+  // getGlassDebug bridge in LiquidGlassRefractionModule.kt and
+  // modules/liquid-glass-refraction/src/index.ts — the device
+  // check reads the glass state from Logcat now, not the screen.
+  const lift = useSharedValue(0);
 
   const labelFraction = useSharedValue(1);
   const lastOffset = useSharedValue(0);
@@ -179,9 +167,6 @@ export function DemoScreen(): React.JSX.Element {
         <Gear size={22} color="#FFFFFF" weight="regular" />
       </Pressable>
 
-      {/* BUILD 6 debug readout (remove before final delivery). */}
-      <Text style={[styles.debugText, { top: insets.top + 8 }]}>{debugText}</Text>
-
       <LiquidNavbar
         tabs={TABS}
         selectedIndex={selectedIndex}
@@ -191,6 +176,16 @@ export function DemoScreen(): React.JSX.Element {
         settings={settings}
       />
 
+      <UpdateModal
+        phase={update.phase}
+        onDownload={() => void update.download()}
+        onCancelDownload={() => void update.cancelDownload()}
+        onInstall={() => void update.install()}
+        onOpenInstallSettings={() => void update.openInstallSettings()}
+        onRetry={update.retry}
+        onLater={update.dismiss}
+      />
+
       {showSettings ? (
         <SettingsSheet
           settings={settings}
@@ -198,6 +193,12 @@ export function DemoScreen(): React.JSX.Element {
           backgroundId={backgroundId}
           onBackgroundChange={setBackgroundId}
           onClose={() => setShowSettings(false)}
+          localBuild={update.localBuild}
+          updateChecking={update.phase.kind === 'checking'}
+          updateUpToDateBuild={
+            update.phase.kind === 'up-to-date' ? update.phase.localBuild : null
+          }
+          onCheckForUpdates={() => void update.checkManual()}
         />
       ) : null}
     </View>
@@ -255,21 +256,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 20,
-  },
-  // BUILD 6 debug readout (remove before final delivery). Top-left,
-  // small monospace on a dark pill, out of the way of the bar and
-  // the settings gear (top-right).
-  debugText: {
-    position: 'absolute',
-    left: 12,
-    zIndex: 30,
-    fontFamily: 'monospace',
-    fontSize: 10,
-    lineHeight: 14,
-    color: '#FFFFFF',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 4,
   },
 });

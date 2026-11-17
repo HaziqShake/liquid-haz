@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Served paths for the update FileProvider: the app-private files
+     dir only (Expo FileSystem.documentDirectory on Android). The
+     downloaded APK is the only file ever shared through it. -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <files-path name="updates" path="." />
+</paths>
