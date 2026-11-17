@@ -83,9 +83,19 @@ jobs:
         run: |
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -f "$APK"
-          MERGED=android/app/build/intermediates/merged_manifests/release/AndroidManifest.xml
-          grep -q "android.permission.REQUEST_INSTALL_PACKAGES" "$MERGED"
-          grep -q "appupdater.fileprovider" "$MERGED"
+          # Check the manifest INSIDE the APK (the shipped artifact),
+          # not the intermediate merged file: its path changed across
+          # AGP versions (attempt 2 died on merged_manifests/ vs
+          # merged_manifest/), and the APK is what the installer sees.
+          AAPT2=$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -maxdepth 2 -name aapt2 2>/dev/null | head -1)
+          if [ -n "$AAPT2" ]; then
+            MANIFEST=$("$AAPT2" dump xmltree "$APK" AndroidManifest.xml)
+          else
+            MANIFEST_FILE=$(ls android/app/build/intermediates/merged_manifest/release/AndroidManifest.xml android/app/build/intermediates/merged_manifests/release/AndroidManifest.xml 2>/dev/null | head -1)
+            MANIFEST=$(cat "$MANIFEST_FILE")
+          fi
+          echo "$MANIFEST" | grep -q "android.permission.REQUEST_INSTALL_PACKAGES"
+          echo "$MANIFEST" | grep -q "appupdater.fileprovider"
           KEY_FP=$(keytool -list -keystore android/app/release.keystore -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" -alias "${{ secrets.ANDROID_KEY_ALIAS }}" 2>/dev/null | grep -i "SHA-256" | awk '{print $2}')
           APK_FP=$(keytool -printcert -jarfile "$APK" 2>/dev/null | grep -i "SHA-256" | awk '{print $2}')
           test -n "$KEY_FP" && test "$KEY_FP" = "$APK_FP"
