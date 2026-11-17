@@ -82,7 +82,7 @@ jobs:
       - name: Verify update prerequisites in the APK
         run: |
           APK=android/app/build/outputs/apk/release/app-release.apk
-          test -f "$APK"
+          test -f "$APK" || { echo "::error::APK not found: $APK"; exit 1; }
           # Check the manifest INSIDE the APK (the shipped artifact),
           # not the intermediate merged file: its path changed across
           # AGP versions (attempt 2 died on merged_manifests/ vs
@@ -94,11 +94,28 @@ jobs:
             MANIFEST_FILE=$(ls android/app/build/intermediates/merged_manifest/release/AndroidManifest.xml android/app/build/intermediates/merged_manifests/release/AndroidManifest.xml 2>/dev/null | head -1)
             MANIFEST=$(cat "$MANIFEST_FILE")
           fi
-          echo "$MANIFEST" | grep -q "android.permission.REQUEST_INSTALL_PACKAGES"
-          echo "$MANIFEST" | grep -q "appupdater.fileprovider"
-          KEY_FP=$(keytool -list -keystore android/app/release.keystore -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" -alias "${{ secrets.ANDROID_KEY_ALIAS }}" 2>/dev/null | grep -i "SHA-256" | awk '{print $2}')
-          APK_FP=$(keytool -printcert -jarfile "$APK" 2>/dev/null | grep -i "SHA-256" | awk '{print $2}')
-          test -n "$KEY_FP" && test "$KEY_FP" = "$APK_FP"
+          echo "$MANIFEST" | grep -q "android.permission.REQUEST_INSTALL_PACKAGES" || { echo "::error::Check 1 failed: REQUEST_INSTALL_PACKAGES missing from APK manifest"; exit 1; }
+          echo "$MANIFEST" | grep -q "appupdater.fileprovider" || { echo "::error::Check 2 failed: appupdater.fileprovider missing from APK manifest"; exit 1; }
+          # Check 3 — fingerprint comparison. The old version used
+          # keytool -printcert -jarfile for the APK, which only reads
+          # JAR (v1) signatures; AGP 8 disables v1 signing by default,
+          # so the APK is v2-only and keytool always answered "Not a
+          # signed jar file", leaving APK_FP empty. It also parsed the
+          # keystore fingerprint with awk '{print $2}', but JDK 17
+          # keytool -list prints "Certificate fingerprint (SHA-256):
+          # <fp>", so $2 is the literal word "fingerprint". Both bugs
+          # made the comparison fail silently every time. Fix: read the
+          # APK fingerprint with apksigner (understands v2/v3), pull the
+          # keystore fingerprint with a regex that matches the 32
+          # colon-separated SHA-256 bytes in either keytool format, and
+          # normalise both (strip colons, lowercase) before comparing.
+          APKSIGNER=$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -maxdepth 2 -name apksigner 2>/dev/null | head -1)
+          test -n "$APKSIGNER" || { echo "::error::Check 3 failed: apksigner not found in build-tools"; exit 1; }
+          KEY_FP=$(keytool -list -keystore android/app/release.keystore -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" -alias "${{ secrets.ANDROID_KEY_ALIAS }}" 2>/dev/null | grep -oiE "[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){31}" | head -1 | tr -d ':' | tr 'A-Z' 'a-z')
+          APK_FP=$("$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | grep -i "SHA-256 digest" | awk '{print $NF}' | tr 'A-Z' 'a-z')
+          test -n "$KEY_FP" || { echo "::error::Check 3 failed: could not read a fingerprint from release.keystore (wrong alias or store password?)"; exit 1; }
+          test -n "$APK_FP" || { echo "::error::Check 3 failed: could not read a fingerprint from the APK (apksigner)"; exit 1; }
+          test "$KEY_FP" = "$APK_FP" || { echo "::error::Check 3 failed: keystore fingerprint $KEY_FP != APK fingerprint $APK_FP"; exit 1; }
           echo "APK signed with the release key ($APK_FP); install permission + FileProvider present."
 
       - name: Upload APK
