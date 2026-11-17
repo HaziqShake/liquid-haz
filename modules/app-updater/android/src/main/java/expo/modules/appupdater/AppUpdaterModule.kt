@@ -26,6 +26,7 @@
 
 package expo.modules.appupdater
 
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -39,6 +40,15 @@ import java.io.FileInputStream
 import java.security.MessageDigest
 
 class AppUpdaterModule : Module() {
+  // The Android Context (the ReactApplicationContext). Expo's
+  // AppContext is NOT a Context: build 15 attempt 1 failed to
+  // compile with every appContext.packageManager / .packageName /
+  // .startActivity as an unresolved reference, and FileProvider
+  // rejected the AppContext argument outright. Use this.
+  private val context: Context
+    get() = appContext.reactContext
+      ?: throw IllegalStateException("React context not available")
+
   override fun definition() = ModuleDefinition {
     Name("AppUpdater")
 
@@ -48,7 +58,7 @@ class AppUpdaterModule : Module() {
     // Cheap binder call; a sync Function is fine.
     Function("canInstall") {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        appContext.packageManager.canRequestPackageInstalls()
+        context.packageManager.canRequestPackageInstalls()
       } else {
         true
       }
@@ -61,10 +71,10 @@ class AppUpdaterModule : Module() {
     // re-checks canInstall() and retries.
     Function("openUnknownSourcesSettings") {
       val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-        data = Uri.parse("package:${appContext.packageName}")
+        data = Uri.parse("package:${context.packageName}")
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
-      appContext.startActivity(intent)
+      context.startActivity(intent)
     }
 
     // Fires the system package installer for the APK at `path`
@@ -80,8 +90,8 @@ class AppUpdaterModule : Module() {
     Function("installApk") { path: String ->
       val file = File(path)
       val uri = FileProvider.getUriForFile(
-        appContext,
-        "${appContext.packageName}.appupdater.fileprovider",
+        context,
+        "${context.packageName}.appupdater.fileprovider",
         file,
       )
       val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -92,10 +102,10 @@ class AppUpdaterModule : Module() {
       // Fail loudly (not silently) if nothing can handle it: a
       // missing FileProvider entry or a bad path must surface as
       // an error in the update modal, not a dead Install button.
-      if (intent.resolveActivity(appContext.packageManager) == null) {
+      if (intent.resolveActivity(context.packageManager) == null) {
         throw IllegalStateException("No activity can install this APK")
       }
-      appContext.startActivity(intent)
+      context.startActivity(intent)
     }
 
     // SHA-256 of the file at `path`, streamed in 8KB chunks so a
